@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>メーター数値読み取りアプリ</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1 class="title">メーター数値読み取りアプリ</h1>
+            <p class="subtitle">アナログメーターまたは7セグメントデジタルメーターの画像から数値を自動読み取りします</p>
+        </header>
+
+        <main class="main">
+            <!-- メータータイプ選択 -->
+            <section class="meter-type-section">
+                <h2 class="section-title">メータータイプを選択</h2>
+                <div class="radio-group">
+                    <label class="radio-label">
+                        <input type="radio" name="meter_type" value="analog" checked>
+                        <span class="radio-text">アナログメーター</span>
+                    </label>
+                    <label class="radio-label">
+                        <input type="radio" name="meter_type" value="digital_7segment">
+                        <span class="radio-text">7セグメントデジタルメーター</span>
+                    </label>
+                </div>
+            </section>
+
+            <!-- 画像アップロードエリア -->
+            <section class="upload-section">
+                <div class="upload-area" id="uploadArea">
+                    <div class="upload-prompt">
+                        <svg class="upload-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                        </svg>
+                        <p class="upload-text">画像をドラッグ&ドロップ<br>または クリックして選択</p>
+                        <p class="upload-info">対応形式: JPG, PNG (最大10MB)</p>
+                    </div>
+                    <input type="file" id="fileInput" accept="image/jpeg,image/png" hidden>
+                </div>
+
+                <!-- プレビューエリア -->
+                <div class="preview-area" id="previewArea" style="display: none;">
+                    <div class="preview-container">
+                        <img id="previewImage" alt="プレビュー" class="preview-image">
+                        <button class="btn-clear" id="btnClear" type="button">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                            クリア
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 解析ボタン -->
+            <section class="action-section">
+                <button class="btn-analyze" id="btnAnalyze" type="button" disabled>
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                    解析開始
+                </button>
+                <div class="loading" id="loading" style="display: none;">
+                    <div class="spinner"></div>
+                    <p class="loading-text">解析中...</p>
+                </div>
+            </section>
+
+            <!-- 結果表示エリア -->
+            <section class="result-section" id="resultSection" style="display: none;">
+                <h2 class="section-title">解析結果</h2>
+                <div class="result-card">
+                    <div class="result-main">
+                        <div class="result-value-container">
+                            <span class="result-value" id="resultValue">-</span>
+                            <span class="result-unit" id="resultUnit"></span>
+                        </div>
+                        <div class="confidence-badge" id="confidenceBadge">
+                            <span class="confidence-label">信頼度:</span>
+                            <span class="confidence-value" id="resultConfidence">-</span>
+                        </div>
+                    </div>
+                    <details class="result-details">
+                        <summary class="details-summary">詳細情報を表示</summary>
+                        <div class="details-content" id="resultDetailsContent">
+                            <!-- 詳細情報がここに動的に追加されます -->
+                        </div>
+                    </details>
+                </div>
+            </section>
+
+            <!-- エラー表示エリア -->
+            <section class="error-section" id="errorSection" style="display: none;">
+                <div class="error-card">
+                    <div class="error-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                    </div>
+                    <h3 class="error-title">エラー</h3>
+                    <p class="error-message" id="errorMessage"></p>
+                    <p class="error-details" id="errorDetails"></p>
+                </div>
+            </section>
+        </main>
+
+        <footer class="footer">
+            <p>Powered by Claude API</p>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
