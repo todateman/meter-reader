@@ -44,10 +44,10 @@ cd meter-reader
 ### 2. 仮想環境の作成（推奨）
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate  # Linux/Mac
+python3 -m venv .venv
+source .venv/bin/activate  # Linux/Mac
 # または
-venv\Scripts\activate  # Windows
+.venv\Scripts\activate  # Windows
 ```
 
 ### 3. 依存パッケージのインストール
