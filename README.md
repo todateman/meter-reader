@@ -35,9 +35,10 @@ OpenCVによるローカル画像処理とClaude APIのビジョン機能を組�
 
 | ファイル | メータータイプ | 正解値 |
 | -------- | -------------- | ------ |
-| analog.jpg | アナログ（COMPOUND圧力計） | -0.078 MPa |
+| analog1.jpg | アナログ（COMPOUND圧力計） | -0.078 MPa |
+| analog2.jpg | アナログ（COMPOUND圧力計） | 0.46 MPa |
 | analog3.jpg | アナログ（スピードメーター） | 124 km/h |
-| digital.jpg | 7セグメントデジタル | - |
+| digital1.jpg | 7セグメントデジタル | - |
 
 ## 技術スタック
 
