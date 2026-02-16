@@ -53,29 +53,76 @@ class NeedleDetector:
 
         needle_angle, tip_x, tip_y, line = needle_info
 
-        # 標準的なアナログメーターの位置比率を計算
-        # 座標系: 真下=0°、反時計回りに増加（左=90°, 上=180°, 右=270°）
-        # 一般的な工業用ゲージは約260°のスイープ
-        # スケール最小値 ≈ 50°（約7:40の位置）
-        # スケール最大値 ≈ 310°（約4:20の位置）
-        min_angle = 50.0
-        max_angle = 310.0
-        sweep = max_angle - min_angle  # 260°
+        # 角度を時計の位置に変換
+        # 座標系: 0°=6時, 90°=9時, 180°=12時, 270°=3時
+        clock_hour = ((needle_angle / 30.0) + 6) % 12
+        clock_h = int(clock_hour)
+        clock_m = int((clock_hour - clock_h) * 60)
+        if clock_h == 0:
+            clock_h = 12
+        clock_position = f"{clock_h}:{clock_m:02d}"
 
-        # 針の角度がスイープ範囲内の何%にあるか
+        # 260°スイープ（標準）でposition_ratioを計算
+        min_angle = 50.0  # 180 - 260/2
+        max_angle = 310.0  # 180 + 260/2
+        sweep = max_angle - min_angle
         position_ratio = (needle_angle - min_angle) / sweep
         position_ratio = max(0.0, min(1.0, position_ratio))
+
+        # 針先端周辺をクロップ（スケール目盛りとの交差部分を拡大）
+        crop_path = self._crop_tip_area(img, cx, cy, radius, tip_x, tip_y)
 
         return {
             "success": True,
             "needle_angle": round(float(needle_angle), 1),
+            "clock_position": clock_position,
             "position_ratio": round(float(position_ratio), 4),
             "position_percent": round(float(position_ratio * 100), 1),
             "center": [int(cx), int(cy)],
             "radius": int(radius),
             "tip": [int(tip_x), int(tip_y)],
-            "needle_line": [int(v) for v in line]
+            "needle_line": [int(v) for v in line],
+            "crop_path": crop_path
         }
+
+    def _crop_tip_area(self, img: np.ndarray, cx: int, cy: int,
+                       radius: int, tip_x: int, tip_y: int) -> Optional[str]:
+        """針先端とスケール目盛りの交差部分をクロップして保存"""
+        import tempfile
+        import os
+
+        try:
+            h, w = img.shape[:2]
+            # 針の方向に沿ってスケール目盛りとの交差点付近をクロップ
+            # 中心からtipへの方向の、radius*0.7の位置を中心にする
+            dx = tip_x - cx
+            dy = tip_y - cy
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist == 0:
+                return None
+            # スケール目盛り付近（radius*0.7）を中心に
+            scale_x = int(cx + dx / dist * radius * 0.7)
+            scale_y = int(cy + dy / dist * radius * 0.7)
+
+            crop_size = int(radius * 0.35)
+            x1 = max(0, scale_x - crop_size)
+            y1 = max(0, scale_y - crop_size)
+            x2 = min(w, scale_x + crop_size)
+            y2 = min(h, scale_y + crop_size)
+
+            cropped = img[y1:y2, x1:x2]
+            if cropped.size == 0:
+                return None
+
+            # 3倍に拡大
+            cropped = cv2.resize(cropped, (cropped.shape[1] * 3, cropped.shape[0] * 3),
+                                 interpolation=cv2.INTER_CUBIC)
+
+            crop_path = os.path.join(tempfile.gettempdir(), 'meter_tip_crop.jpg')
+            cv2.imwrite(crop_path, cropped, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            return crop_path
+        except Exception:
+            return None
 
     def _resize(self, img: np.ndarray) -> np.ndarray:
         """横幅を指定サイズにリサイズ"""
@@ -84,9 +131,11 @@ class NeedleDetector:
         return cv2.resize(img, (self.target_width, int(height * scale)))
 
     def _detect_circle(self, img: np.ndarray) -> Tuple[Optional[Tuple[int, int]], Optional[int]]:
-        """ハフ変換でメーターの円を検出"""
+        """ハフ変換でメーターの円を検出（画像中心に近く大きい円を優先）"""
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        height, width = img.shape[:2]
+        img_cx, img_cy = width // 2, height // 2
 
         circles = cv2.HoughCircles(
             blurred, cv2.HOUGH_GRADIENT,
@@ -97,7 +146,15 @@ class NeedleDetector:
 
         if circles is not None:
             circles = np.round(circles[0, :]).astype(int)
-            best = max(circles, key=lambda c: c[2])
+            # 小さすぎる円を除外（画像幅の1/6以上）
+            min_radius = width // 6
+            candidates = [c for c in circles if c[2] >= min_radius]
+            if not candidates:
+                candidates = list(circles)
+            # 画像中心に最も近い円を選択
+            best = min(candidates, key=lambda c: math.sqrt(
+                (c[0] - img_cx) ** 2 + (c[1] - img_cy) ** 2
+            ))
             return (int(best[0]), int(best[1])), int(best[2])
 
         return None, None

@@ -1,31 +1,50 @@
 # メーター数値読み取りアプリ
 
-アナログメーターと7セグメントデジタルメーターの画像から数値を自動で読み取るWebアプリケーションです。  
-Claude APIのビジョン機能を活用して高精度な画像認識を実現しています。
+アナログメーターと7セグメントデジタルメーターの画像から数値を自動で読み取るWebアプリケーションです。
+OpenCVによるローカル画像処理とClaude APIのビジョン機能を組み合わせて高精度な読み取りを実現しています。
 
 ## 機能
 
-- **アナログメーター読み取り**: 針の位置から数値を自動読み取り
-- **7セグメントデジタルメーター読み取り**: デジタル表示の数値を自動読み取り
+- **アナログメーター読み取り**: OpenCVで針の角度を検出し、Claude APIでスケールを読み取って数値を算出
+- **7セグメントデジタルメーター読み取り**: Claude APIのビジョン機能でデジタル表示の数値を自動読み取り
 - **ドラッグ&ドロップ対応**: 簡単に画像をアップロード
 - **レスポンシブデザイン**: PC・タブレット・スマートフォン対応
 - **詳細情報表示**: 読み取り結果の信頼度や詳細情報を表示
 
-## スクリーンショット
+## アナログメーター読み取りの仕組み
 
+本アプリはアナログメーターの読み取りに2段階のハイブリッド方式を採用しています。
+
+```text
+画像 → [OpenCV] 針の角度検出 → position_ratio算出
+                                       ↓
+画像 → [Claude API] スケール読み取り → scale_min, scale_max, unit
+                                       ↓
+            [サーバー側計算] value = scale_min + (scale_max - scale_min) × position_ratio
 ```
-[メイン画面]
-- メータータイプ選択
-- 画像アップロードエリア
-- 解析結果表示
-```
+
+1. **OpenCV（ローカル処理）**: ハフ変換で円と針を検出し、針の角度からスケール上の位置比率（position_ratio）を算出
+2. **Claude API（スケール読み取り）**: 画像からスケールの最小値・最大値・単位のみを読み取り
+3. **サーバー側計算**: `値 = 最小値 + (最大値 - 最小値) × position_ratio` で最終値を算出
+
+この方式により、Claude APIの計算ミスや目視による上書きを排除し、安定した読み取り精度を実現しています。
+
+## サンプル画像
+
+`sample/` ディレクトリにテスト用画像が含まれています:
+
+| ファイル | メータータイプ | 正解値 |
+| -------- | -------------- | ------ |
+| analog.jpg | アナログ（COMPOUND圧力計） | -0.078 MPa |
+| analog3.jpg | アナログ（スピードメーター） | 124 km/h |
+| digital.jpg | 7セグメントデジタル | - |
 
 ## 技術スタック
 
 - **バックエンド**: Python 3.8+, Flask
 - **画像認識**: Claude API (Anthropic)
+- **画像処理**: OpenCV (opencv-python-headless), NumPy
 - **フロントエンド**: HTML5, CSS3, JavaScript (Vanilla)
-- **画像処理**: Pillow
 
 ## 必要要件
 
@@ -53,7 +72,7 @@ source .venv/bin/activate  # Linux/Mac
 ### 3. 依存パッケージのインストール
 
 ```bash
-uv pip install -r requirements.txt
+pip install -r requirements.txt
 ```
 
 ### 4. 環境変数の設定
@@ -75,18 +94,10 @@ UPLOAD_FOLDER=static/uploads
 ALLOWED_EXTENSIONS=jpg,jpeg,png
 
 # Claude APIモデル設定
-# 推奨: claude-sonnet-4-5 (精度と速度のバランス)
-# 高精度: claude-opus-4-5-20251101 (高コスト)
-# 高速: claude-haiku-4-5 (精度は劣る)
 CLAUDE_MODEL=claude-sonnet-4-5
 CLAUDE_MAX_TOKENS=1024
 CLAUDE_TIMEOUT=30
 ```
-
-**モデルの選択について:**
-- `claude-sonnet-4-5`: 精度と速度のバランスが良い（推奨）
-- `claude-opus-4-5-20251101`: 最高精度だが高コスト（精度重視の場合）
-- `claude-haiku-4-5`: 高速・低コストだが精度は劣る（テスト用）
 
 ### 5. アプリケーションの起動
 
@@ -94,7 +105,7 @@ CLAUDE_TIMEOUT=30
 python app.py
 ```
 
-ブラウザで http://localhost:5000 にアクセスしてください。
+ブラウザで <http://localhost:5000> にアクセスしてください。
 
 ## 使い方
 
@@ -114,7 +125,7 @@ python app.py
 
 ### ヒント
 
-- **アナログメーター**: メーター全体が写るように撮影してください
+- **アナログメーター**: メーター全体が写るように撮影してください。複数のメーターが写っている場合、画像中心に最も近いものが解析対象になります
 - **デジタルメーター**: 数字がはっきり見えるように撮影してください
 - **照明**: 明るい場所で、反射や影がない状態で撮影すると精度が向上します
 - **角度**: 正面から撮影するのが最適です
@@ -141,17 +152,17 @@ meter_type: "analog" または "digital_7segment"
 {
   "success": true,
   "data": {
-    "value": 123.45,
-    "unit": "kWh",
+    "value": -0.078,
+    "unit": "MPa",
     "confidence": "high",
     "meter_type": "analog",
     "details": {
-      "scale_range": "0-200",
-      "needle_position": "約62%の位置",
-      "notes": "メーターは良好な状態です"
+      "scale_range": "-0.1~0.1",
+      "needle_position": "スケール全体の11.1%の位置",
+      "notes": "計算: -0.1 + (0.1 - -0.1) × 0.1108 = -0.078"
     }
   },
-  "timestamp": "2026-01-28T10:30:00Z"
+  "timestamp": "2026-02-17T10:30:00Z"
 }
 ```
 
@@ -177,26 +188,24 @@ meter_type: "analog" または "digital_7segment"
 ```json
 {
   "status": "ok",
-  "timestamp": "2026-01-28T10:30:00Z"
+  "timestamp": "2026-02-17T10:30:00Z"
 }
 ```
 
 ## エラーコード
 
 | コード | 説明 | 対処法 |
-|--------|------|--------|
+| ------ | ---- | ------ |
 | `NO_FILE` | ファイルが選択されていない | 画像ファイルを選択してください |
 | `INVALID_FILE_TYPE` | 非対応のファイル形式 | JPGまたはPNG形式の画像を使用してください |
 | `FILE_TOO_LARGE` | ファイルサイズ超過 | 10MB以下の画像を使用してください |
 | `NO_METER_DETECTED` | メーター未検出 | メーター全体が写っている画像を使用してください |
-| `UNCLEAR_IMAGE` | 画像不鮮明 | 明るい場所で、ピントを合わせて撮影してください |
 | `API_ERROR` | Claude APIエラー | しばらく待ってから再度お試しください |
 | `RATE_LIMIT` | APIレート制限 | 少し待ってから再度お試しください |
-| `NETWORK_ERROR` | ネットワークエラー | インターネット接続を確認してください |
 
 ## プロジェクト構造
 
-```
+```text
 meter-reader/
 ├── app.py                      # Flask メインアプリケーション
 ├── config.py                   # 設定ファイル
@@ -206,8 +215,14 @@ meter-reader/
 ├── README.md                  # このファイル
 ├── utils/
 │   ├── __init__.py
-│   ├── claude_client.py       # Claude API クライアント
+│   ├── claude_client.py       # Claude API クライアント（スケール読み取り+値計算）
+│   ├── needle_detector.py     # OpenCV 針検出（角度・位置比率算出）
 │   └── image_processor.py     # 画像処理ユーティリティ
+├── sample/                    # テスト用サンプル画像
+│   ├── analog.jpg
+│   ├── analog2.jpg
+│   ├── analog3.jpg
+│   └── digital.jpg
 ├── static/
 │   ├── css/
 │   │   └── style.css          # スタイルシート
@@ -233,32 +248,7 @@ python app.py
 本番環境では Gunicorn などの WSGI サーバーを使用することを推奨します。
 
 ```bash
-pip install gunicorn
 gunicorn -w 4 -b 0.0.0.0:8000 app:app
-```
-
-### Docker での実行
-
-Dockerfileを作成して実行することもできます（例）:
-
-```dockerfile
-FROM python:3.10-slim
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-EXPOSE 5000
-
-CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "app:app"]
-```
-
-```bash
-docker build -t meter-reader .
-docker run -p 5000:5000 --env-file .env meter-reader
 ```
 
 ## トラブルシューティング
@@ -274,10 +264,15 @@ A: 画像サイズを10MB以下に縮小してください。
 ### Q: "メーターを検出できませんでした" と表示される
 
 A: 以下を確認してください:
+
 - メーター全体が写っているか
 - 画像が鮮明か
 - 照明が適切か
 - 正面から撮影しているか
+
+### Q: アナログメーターの読み取り値がずれる
+
+A: OpenCVの針検出は260°スイープを前提としています。ゲージの種類によってスイープ角度が異なるため、±2%程度の誤差が生じる場合があります。
 
 ### Q: 解析に時間がかかる
 
@@ -298,24 +293,19 @@ MIT License
 
 Created with Claude Code
 
-## 貢献
-
-Issue や Pull Request を歓迎します。
-
 ## 更新履歴
 
+### v1.1.0 (2026-02-17)
+
+- OpenCVによるアナログメーター針検出機能を追加（NeedleDetector）
+- ハフ変換による円検出・針検出、角度からposition_ratio算出
+- 画像中心に最も近い円を優先する検出アルゴリズム
+- Claudeにはスケール読み取りのみを担当させ、値計算はサーバー側で実行
+- Claudeの目視による計算値の上書きを排除し、安定した精度を実現
+
 ### v1.0.0 (2026-01-28)
+
 - 初回リリース
 - アナログメーター読み取り機能
 - 7セグメントデジタルメーター読み取り機能
 - レスポンシブWebUI
-
-## 今後の拡張予定
-
-- [ ] 複数画像の一括処理
-- [ ] 解析履歴の保存・表示
-- [ ] CSV/JSONエクスポート機能
-- [ ] カメラからの直接撮影（モバイル）
-- [ ] より詳細な信頼度スコア
-- [ ] 多言語対応（英語など）
-- [ ] テーマ切り替え（ダークモード）

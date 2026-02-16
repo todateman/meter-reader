@@ -68,10 +68,35 @@ class ClaudeVisionClient:
         # ローカルでOpenCV針検出を実行
         opencv_result = self.needle_detector.detect(image_path)
 
-        # OpenCV結果を含むプロンプトを構築
+        # Claudeにスケール情報のみ読み取らせる
         prompt = self._build_analog_prompt(opencv_result)
+        scale_info = self._call_api(image_path, prompt)
 
-        return self._call_api(image_path, prompt)
+        # サーバー側で値を計算（Claudeの計算ミスを防止）
+        if opencv_result.get("success") and "scale_min" in scale_info and "scale_max" in scale_info:
+            ratio = opencv_result["position_ratio"]
+            scale_min = float(scale_info["scale_min"])
+            scale_max = float(scale_info["scale_max"])
+            calculated_value = scale_min + (scale_max - scale_min) * ratio
+
+            # 小数点以下の桁数をスケールに合わせて丸め
+            decimal_places = max(
+                len(str(scale_min).split('.')[-1]) if '.' in str(scale_min) else 0,
+                len(str(scale_max).split('.')[-1]) if '.' in str(scale_max) else 0,
+            )
+            calculated_value = round(calculated_value, decimal_places + 2)
+
+            return {
+                "value": calculated_value,
+                "unit": scale_info.get("unit", ""),
+                "scale_range": f"{scale_min}~{scale_max}",
+                "needle_position": f"スケール全体の{opencv_result['position_percent']}%の位置",
+                "confidence": scale_info.get("confidence", "medium"),
+                "notes": f"計算: {scale_min} + ({scale_max} - {scale_min}) × {ratio} = {calculated_value}"
+            }
+
+        # OpenCV検出失敗時はClaude単独で読み取り（フォールバック）
+        return scale_info
 
     def analyze_digital_meter(self, image_path: str) -> Dict[str, Any]:
         """7セグメントデジタルメーターを解析"""
@@ -154,60 +179,32 @@ class ClaudeVisionClient:
             )
 
     def _build_analog_prompt(self, opencv_result: Dict[str, Any]) -> str:
-        """アナログメーター用プロンプトを構築（OpenCV検出結果付き）"""
+        """アナログメーター用プロンプトを構築（スケール読み取り専用）"""
 
-        if opencv_result.get("success"):
-            ratio = opencv_result["position_ratio"]
-            percent = opencv_result["position_percent"]
-            opencv_section = f"""## OpenCVによる針位置の検出結果（サーバー側で事前処理済み）
+        return """あなたはアナログメーター読み取りの専門家です。
+画像からメーターのスケール情報を読み取ってください。
 
-OpenCVの画像処理（ハフ変換による直線検出）で針の位置を解析した結果:
+## 読み取り手順
+1. メーターのスケール最小値（左下端の数字）を読み取る
+   - 負の値の場合はマイナス記号を含める（例: -0.1）
+2. メーターのスケール最大値（右下端の数字）を読み取る
+3. 単位を読み取る（MPa, kPa, km/h, ℃ など）
 
-**針はスケール最小値の端から {percent}% の位置にあります。**
-（スケール最小値=0%、スケール最大値=100%）
-
-この結果を使い、以下の簡単な計算で値を求めてください:
-```
-値 = 最小値 + (最大値 - 最小値) × {ratio}
-```"""
-        else:
-            opencv_section = """## OpenCVによる針検出結果
-
-OpenCVでは針を検出できませんでした。画像の目視観察に基づいて値を読み取ってください。"""
-
-        return f"""あなたはアナログメーター読み取りの専門家です。
-
-{opencv_section}
-
-## 手順
-
-### ステップ1: スケールの読み取り
-画像からメーターのスケール情報を読み取ってください:
-- スケールの最小値（左端の数字）
-- スケールの最大値（右端の数字）
-- 単位
-
-### ステップ2: 値の計算
-上記の計算式に当てはめて値を計算してください。
-
-**計算例**: スケールが -0.1〜+0.1 MPa で、針が {opencv_result.get('position_percent', 'XX')}% の位置の場合:
-値 = -0.1 + (0.1 - (-0.1)) × {opencv_result.get('position_ratio', 'X')} = -0.1 + 0.2 × {opencv_result.get('position_ratio', 'X')}
-
-### ステップ3: 目視での検証
-計算結果が画像内の針位置と矛盾しないか確認してください。
+## 注意事項
+- COMPOUND（複合）ゲージの場合、左下が負の最小値、右下が正の最大値です
+- 左右対称のスケール（例: 左に0.1、右に0.1）の場合、左側は負（-0.1）です
 
 ## 出力形式
 必ず以下のJSON形式で返してください（他のテキストは含めない）:
 
 ```json
-{{
-  "value": 計算された数値,
+{
+  "scale_min": 最小値（数値）,
+  "scale_max": 最大値（数値）,
   "unit": "単位文字列",
-  "scale_range": "最小値-最大値",
-  "needle_position": "針の位置の説明",
   "confidence": "high/medium/low",
-  "notes": "計算過程"
-}}
+  "notes": "スケールの説明"
+}
 ```"""
 
     def _build_digital_prompt(self) -> str:
