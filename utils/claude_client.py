@@ -5,6 +5,8 @@ import re
 from typing import Dict, Any, Optional
 from pathlib import Path
 
+from utils.needle_detector import NeedleDetector
+
 
 class MeterReaderException(Exception):
     """メーター読み取りエラー用のカスタム例外"""
@@ -19,7 +21,7 @@ class MeterReaderException(Exception):
 class ClaudeVisionClient:
     """Claude APIのビジョン機能を使用した画像解析クライアント"""
 
-    def __init__(self, api_key: str, model: str = 'claude-opus-4-5-20251101', max_tokens: int = 1024):
+    def __init__(self, api_key: str, model: str = 'claude-sonnet-4-5', max_tokens: int = 1024):
         """
         ClaudeVisionClientの初期化
 
@@ -34,6 +36,7 @@ class ClaudeVisionClient:
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
         self.max_tokens = max_tokens
+        self.needle_detector = NeedleDetector()
 
     def analyze_meter(self, image_path: str, meter_type: str) -> Dict[str, Any]:
         """
@@ -61,8 +64,13 @@ class ClaudeVisionClient:
             )
 
     def analyze_analog_meter(self, image_path: str) -> Dict[str, Any]:
-        """アナログメーターを解析"""
-        prompt = self._build_analog_prompt()
+        """アナログメーターをローカルOpenCV + Claude APIで解析"""
+        # ローカルでOpenCV針検出を実行
+        opencv_result = self.needle_detector.detect(image_path)
+
+        # OpenCV結果を含むプロンプトを構築
+        prompt = self._build_analog_prompt(opencv_result)
+
         return self._call_api(image_path, prompt)
 
     def analyze_digital_meter(self, image_path: str) -> Dict[str, Any]:
@@ -120,7 +128,7 @@ class ClaudeVisionClient:
             # レスポンスをパース
             return self._parse_response(message)
 
-        except anthropic.RateLimitError as e:
+        except anthropic.RateLimitError:
             raise MeterReaderException(
                 'RATE_LIMIT',
                 'APIレート制限に達しました',
@@ -145,66 +153,61 @@ class ClaudeVisionClient:
                 str(e)
             )
 
-    def _build_analog_prompt(self) -> str:
-        """アナログメーター用プロンプトを構築"""
-        return """あなたはアナログメーター読み取りの専門家です。以下の手順で画像内のアナログメーターを正確に読み取ってください。
+    def _build_analog_prompt(self, opencv_result: Dict[str, Any]) -> str:
+        """アナログメーター用プロンプトを構築（OpenCV検出結果付き）"""
 
-## 読み取り手順
+        if opencv_result.get("success"):
+            ratio = opencv_result["position_ratio"]
+            percent = opencv_result["position_percent"]
+            opencv_section = f"""## OpenCVによる針位置の検出結果（サーバー側で事前処理済み）
 
-### ステップ1: メーターの構造を理解
-1. メーターの文字盤全体を観察
-2. 画像が小さく明瞭に読み取れない場合は、拡大・鮮明化を試みる
-3. 目盛りの配置を確認（円形、半円形、扇形など）
-4. 主要目盛り（大きな数字）と補助目盛り（小さな線）を識別
-5. スケールの最小値と最大値を読み取る
+OpenCVの画像処理（ハフ変換による直線検出）で針の位置を解析した結果:
 
-### ステップ2: 針の位置を正確に特定
-1. 針の先端が指している位置を慎重に観察
-2. 針の先端はもう一端よりも細く鋭利で、よりメーターの外周に近い位置（多くの場合は目盛りの上）にある
-3. 針が2つの目盛りの間にある場合は、その中間位置を推定
-4. 目盛り間の距離を等分に考えて補間計算
-5. 針の影や反射に惑わされないよう注意
+**針はスケール最小値の端から {percent}% の位置にあります。**
+（スケール最小値=0%、スケール最大値=100%）
 
-### ステップ3: 数値を計算
-1. 針が指している主要目盛りを特定
-2. 主要目盛り間の補助目盛りの数を数える
-3. 針の位置から補間して正確な値を計算
-   例: 目盛りが0, 10, 20で針が0と10の中間なら5
-   例: 目盛りが0, 100, 200で針が100と200の3/4位置なら175
-4. 小数点以下の精度も考慮（目盛りの密度に応じて）
+この結果を使い、以下の簡単な計算で値を求めてください:
+```
+値 = 最小値 + (最大値 - 最小値) × {ratio}
+```"""
+        else:
+            opencv_section = """## OpenCVによる針検出結果
 
-### ステップ4: 検証
-1. 計算した値がスケール範囲内にあることを確認
-2. 針の角度と値の関係が妥当か確認
-3. 単位が表示されている場合は記録
+OpenCVでは針を検出できませんでした。画像の目視観察に基づいて値を読み取ってください。"""
 
-## 注意事項
-- 針の影や光の反射を針本体と間違えない
-- 針本体のうち、先端部分を正確に特定（間違って中心からの距離が短い方を選ばない）
-- パースペクティブ（角度）による歪みを考慮
-- 複数の針がある場合は、最も太い針または主要な針を読み取る
-- 不明確な場合は confidence を "medium" または "low" に設定
+        return f"""あなたはアナログメーター読み取りの専門家です。
+
+{opencv_section}
+
+## 手順
+
+### ステップ1: スケールの読み取り
+画像からメーターのスケール情報を読み取ってください:
+- スケールの最小値（左端の数字）
+- スケールの最大値（右端の数字）
+- 単位
+
+### ステップ2: 値の計算
+上記の計算式に当てはめて値を計算してください。
+
+**計算例**: スケールが -0.1〜+0.1 MPa で、針が {opencv_result.get('position_percent', 'XX')}% の位置の場合:
+値 = -0.1 + (0.1 - (-0.1)) × {opencv_result.get('position_ratio', 'X')} = -0.1 + 0.2 × {opencv_result.get('position_ratio', 'X')}
+
+### ステップ3: 目視での検証
+計算結果が画像内の針位置と矛盾しないか確認してください。
 
 ## 出力形式
 必ず以下のJSON形式で返してください（他のテキストは含めない）:
 
 ```json
-{
-  "value": 数値（数値型、小数点含む）,
-  "unit": "単位文字列（例: kWh, MPa, ℃など。不明な場合は空文字列）",
-  "scale_range": "最小値-最大値（例: 0-100）",
-  "needle_position": "針の位置の詳細説明（例: スケールの約62%の位置、100と200の中間より少し上）",
-  "confidence": "high/medium/low（high: 針が明確で目盛りも読みやすい、medium: やや不鮮明、low: 判読困難）",
-  "notes": "追加の観察事項（例: 反射あり、針が目盛りの間など）"
-}
-```
-
-エラーの場合:
-```json
-{
-  "error": "エラーの詳細説明（メーターが写っていない、画像が不鮮明など）",
-  "confidence": "low"
-}
+{{
+  "value": 計算された数値,
+  "unit": "単位文字列",
+  "scale_range": "最小値-最大値",
+  "needle_position": "針の位置の説明",
+  "confidence": "high/medium/low",
+  "notes": "計算過程"
+}}
 ```"""
 
     def _build_digital_prompt(self) -> str:

@@ -18,3 +18,4 @@ venv/
 *.swo
 *~
 .DS_Store
+.skill_id
