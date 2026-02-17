@@ -186,7 +186,7 @@ function displayResult(data) {
 
     // 詳細情報
     const detailsContent = document.getElementById('resultDetailsContent');
-    detailsContent.innerHTML = formatDetails(data.details, data.meter_type);
+    detailsContent.innerHTML = formatDetails(data.details, data.meter_type, data.analysis_mode);
 
     // 結果セクションを表示
     resultSection.style.display = 'block';
@@ -215,10 +215,14 @@ function getConfidenceLabel(confidence) {
 }
 
 // 詳細情報フォーマット
-function formatDetails(details, meterType) {
+function formatDetails(details, meterType, analysisMode) {
     if (!details) return '<p>詳細情報はありません</p>';
 
     let html = '<div class="details-grid">';
+
+    if (analysisMode) {
+        html += `<div class="detail-item"><span class="detail-label">実行モード:</span> <span class="detail-value">${escapeHtml(analysisMode)}</span></div>`;
+    }
 
     if (meterType === 'analog') {
         if (details.scale_range) {
@@ -226,6 +230,12 @@ function formatDetails(details, meterType) {
         }
         if (details.needle_position) {
             html += `<div class="detail-item"><span class="detail-label">針の位置:</span> <span class="detail-value">${escapeHtml(details.needle_position)}</span></div>`;
+        }
+        if (details.debug_selection_reason) {
+            html += `<div class="detail-item detail-item-full"><span class="detail-label">針選定理由:</span> <span class="detail-value">${escapeHtml(details.debug_selection_reason)}</span></div>`;
+        }
+        if (details.debug_image_base64) {
+            html += `<div class="detail-item detail-item-full"><span class="detail-label">デバッグ画像:</span><div class="detail-value"><img src="data:image/jpeg;base64,${details.debug_image_base64}" alt="needle debug" style="max-width:100%;height:auto;border-radius:8px;margin-top:8px;"></div></div>`;
         }
     } else if (meterType === 'digital_7segment') {
         if (details.decimal_places !== undefined) {

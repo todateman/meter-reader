@@ -16,7 +16,8 @@ Config.init_app(app)
 claude_client = ClaudeVisionClient(
     api_key=app.config['ANTHROPIC_API_KEY'],
     model=app.config['CLAUDE_MODEL'],
-    max_tokens=app.config['CLAUDE_MAX_TOKENS']
+    max_tokens=app.config['CLAUDE_MAX_TOKENS'],
+    debug_mode=app.config['DEBUG_MODE']
 )
 
 image_processor = ImageProcessor(
@@ -28,7 +29,7 @@ image_processor = ImageProcessor(
 @app.route('/')
 def index():
     """メインページを表示"""
-    return render_template('index.html')
+    return render_template('index.html', debug_mode=app.config['DEBUG_MODE'])
 
 
 @app.route('/api/health', methods=['GET'])
@@ -127,6 +128,7 @@ def analyze():
                 'unit': result.get('unit', ''),
                 'confidence': result.get('confidence', 'medium'),
                 'meter_type': meter_type,
+                'analysis_mode': app.config['DEBUG_MODE'],
                 'details': {}
             }
 
@@ -135,7 +137,9 @@ def analyze():
                 response_data['details'] = {
                     'scale_range': result.get('scale_range', ''),
                     'needle_position': result.get('needle_position', ''),
-                    'notes': result.get('notes', '')
+                    'notes': result.get('notes', ''),
+                    'debug_image_base64': result.get('debug_image_base64', None),
+                    'debug_selection_reason': result.get('debug_selection_reason', '')
                 }
             else:  # digital_7segment
                 response_data['details'] = {

@@ -57,6 +57,23 @@ body {
     line-height: 1.5;
 }
 
+.mode-display {
+    margin-top: 0.75rem;
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+}
+
+.mode-badge {
+    display: inline-block;
+    margin-left: 0.35rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    background: #e0e7ff;
+    color: #3730a3;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+}
+
 /* セクションタイトル */
 .section-title {
     font-size: 1.25rem;

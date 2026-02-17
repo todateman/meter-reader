@@ -33,12 +33,14 @@ OpenCVによるローカル画像処理とClaude APIのビジョン機能を組�
 
 `sample/` ディレクトリにテスト用画像が含まれています:
 
-| ファイル | メータータイプ | 正解値 |
-| -------- | -------------- | ------ |
-| analog1.jpg | アナログ（COMPOUND圧力計） | -0.078 MPa |
-| analog2.jpg | アナログ（COMPOUND圧力計） | 0.46 MPa |
-| analog3.jpg | アナログ（スピードメーター） | 124 km/h |
-| digital1.jpg | 7セグメントデジタル | - |
+| ファイル | メータータイプ | 正解値 | 最小値 | 最大値 |
+| ------- | ------------- | ------ | ----- | ----- |
+| analog1.jpg | アナログ（COMPOUND圧力計） | -0.078 MPa | -0.1 MPa | 0.1 MPa |
+| analog2.jpg | アナログ（COMPOUND圧力計） | 0.46 MPa | -0.1 MPa | 1.5 MPa |
+| analog3.jpg | アナログ（スピードメーター） | 124 km/h | 0 km/h | 160 km/h |
+| analog4.jpg | アナログ（COMPOUND圧力計） | -8.0 kg/cm2 | 0 kg/cm2 | 10 kg/cm2 |
+| analog5.jpg | アナログ（COMPOUND圧力計） | -4.5 kg/cm2 | 0 kg/cm2 | 10 kg/cm2 |
+| digital1.jpg | 7セグメントデジタル | -2.66 MPa | - | - |
 
 ## 技術スタック
 
@@ -116,7 +118,19 @@ ALLOWED_EXTENSIONS=jpg,jpeg,png
 CLAUDE_MODEL=claude-sonnet-4-5
 CLAUDE_MAX_TOKENS=1024
 CLAUDE_TIMEOUT=30
+
+# 解析モード
+# OPENCV: OpenCVのみ実行（アナログの針位置のみ）
+# CLAUDE: Claude APIのみ実行
+# BOTH: OpenCV + Claude API（通常モード）
+DEBUG_MODE=BOTH
 ```
+
+### DEBUG_MODE の選択肢
+
+- `OPENCV`: OpenCVのみ実行（アナログメーターの針位置検出のみ。スケール読み取り・最終値計算は行いません）
+- `CLAUDE`: Claude APIのみ実行（画像目視で値を直接読み取り）
+- `BOTH`: OpenCVとClaude APIを両方実行（通常モード）
 
 ### 5. アプリケーションの起動
 

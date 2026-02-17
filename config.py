@@ -29,6 +29,9 @@ class Config:
     CLAUDE_MAX_TOKENS = int(os.getenv('CLAUDE_MAX_TOKENS', '1024'))
     CLAUDE_TIMEOUT = int(os.getenv('CLAUDE_TIMEOUT', '30'))  # seconds
 
+    _debug_mode = os.getenv('DEBUG_MODE', 'BOTH').strip().upper()
+    DEBUG_MODE = _debug_mode if _debug_mode in {'OPENCV', 'CLAUDE', 'BOTH'} else 'BOTH'
+
     @staticmethod
     def init_app(app):
         """アプリケーション初期化時の処理"""

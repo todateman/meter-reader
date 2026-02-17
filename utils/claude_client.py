@@ -21,7 +21,15 @@ class MeterReaderException(Exception):
 class ClaudeVisionClient:
     """Claude APIのビジョン機能を使用した画像解析クライアント"""
 
-    def __init__(self, api_key: str, model: str = 'claude-sonnet-4-5', max_tokens: int = 1024):
+    VALID_DEBUG_MODES = {'OPENCV', 'CLAUDE', 'BOTH'}
+
+    def __init__(
+        self,
+        api_key: Optional[str],
+        model: str = 'claude-sonnet-4-5',
+        max_tokens: int = 1024,
+        debug_mode: str = 'BOTH'
+    ):
         """
         ClaudeVisionClientの初期化
 
@@ -30,10 +38,14 @@ class ClaudeVisionClient:
             model: 使用するClaudeモデル
             max_tokens: 最大トークン数
         """
-        if not api_key:
+        self.debug_mode = (debug_mode or 'BOTH').upper()
+        if self.debug_mode not in self.VALID_DEBUG_MODES:
+            self.debug_mode = 'BOTH'
+
+        if self.debug_mode in {'CLAUDE', 'BOTH'} and not api_key:
             raise ValueError("ANTHROPIC_API_KEY が設定されていません")
 
-        self.client = anthropic.Anthropic(api_key=api_key)
+        self.client = anthropic.Anthropic(api_key=api_key) if api_key else None
         self.model = model
         self.max_tokens = max_tokens
         self.needle_detector = NeedleDetector()
@@ -55,6 +67,12 @@ class ClaudeVisionClient:
         if meter_type == 'analog':
             return self.analyze_analog_meter(image_path)
         elif meter_type == 'digital_7segment':
+            if self.debug_mode == 'OPENCV':
+                raise MeterReaderException(
+                    'INVALID_DEBUG_MODE',
+                    '現在のDEBUG_MODEではデジタルメーター解析を実行できません',
+                    'digital_7segmentはClaude APIが必要です。DEBUG_MODEをCLAUDEまたはBOTHに変更してください'
+                )
             return self.analyze_digital_meter(image_path)
         else:
             raise MeterReaderException(
@@ -64,9 +82,21 @@ class ClaudeVisionClient:
             )
 
     def analyze_analog_meter(self, image_path: str) -> Dict[str, Any]:
-        """アナログメーターをローカルOpenCV + Claude APIで解析"""
+        """アナログメーターをDEBUG_MODEに応じて解析"""
+        if self.debug_mode == 'OPENCV':
+            return self._analyze_analog_opencv_only(image_path)
+
+        if self.debug_mode == 'CLAUDE':
+            return self._analyze_analog_claude_only(image_path)
+
+        return self._analyze_analog_both(image_path)
+
+    def _analyze_analog_both(self, image_path: str) -> Dict[str, Any]:
+        """アナログメーターをローカルOpenCV + Claude APIで解析（通常モード）"""
         # ローカルでOpenCV針検出を実行
         opencv_result = self.needle_detector.detect(image_path)
+        debug_image_base64 = self._encode_debug_image(opencv_result.get("debug_image_path"))
+        debug_selection_reason = opencv_result.get("debug_selection_reason")
 
         # Claudeにスケール情報のみ読み取らせる
         prompt = self._build_analog_prompt(opencv_result)
@@ -92,11 +122,70 @@ class ClaudeVisionClient:
                 "scale_range": f"{scale_min}~{scale_max}",
                 "needle_position": f"スケール全体の{opencv_result['position_percent']}%の位置",
                 "confidence": scale_info.get("confidence", "medium"),
-                "notes": f"計算: {scale_min} + ({scale_max} - {scale_min}) × {ratio} = {calculated_value}"
+                "notes": f"計算: {scale_min} + ({scale_max} - {scale_min}) × {ratio} = {calculated_value}",
+                "debug_image_base64": debug_image_base64,
+                "debug_selection_reason": debug_selection_reason
             }
 
         # OpenCV検出失敗時はClaude単独で読み取り（フォールバック）
+        scale_info["debug_image_base64"] = debug_image_base64
+        scale_info["debug_selection_reason"] = debug_selection_reason
         return scale_info
+
+    def _analyze_analog_opencv_only(self, image_path: str) -> Dict[str, Any]:
+        """アナログメーターをOpenCVのみで解析（デバッグ用）"""
+        opencv_result = self.needle_detector.detect(image_path)
+
+        if not opencv_result.get("success"):
+            raise MeterReaderException(
+                'NO_METER_DETECTED',
+                'OpenCVで針を検出できませんでした',
+                opencv_result.get('error', '針検出に失敗しました')
+            )
+
+        return {
+            "value": None,
+            "unit": "",
+            "scale_range": "",
+            "needle_position": f"スケール全体の{opencv_result['position_percent']}%の位置",
+            "confidence": "medium",
+            "notes": "DEBUG_MODE=OPENCV: OpenCVのみ実行（スケール読み取り・最終値計算は未実施）",
+            "debug_image_base64": self._encode_debug_image(opencv_result.get("debug_image_path")),
+            "debug_selection_reason": opencv_result.get("debug_selection_reason")
+        }
+
+    def _analyze_analog_claude_only(self, image_path: str) -> Dict[str, Any]:
+        """アナログメーターをClaude APIのみで解析（デバッグ用）"""
+        prompt = self._build_analog_claude_only_prompt()
+        result = self._call_api(image_path, prompt)
+
+        scale_min = result.get('scale_min')
+        scale_max = result.get('scale_max')
+        scale_range = ''
+        if scale_min is not None and scale_max is not None:
+            scale_range = f"{scale_min}~{scale_max}"
+
+        return {
+            "value": result.get('value'),
+            "unit": result.get('unit', ''),
+            "scale_range": scale_range,
+            "needle_position": result.get('needle_position', ''),
+            "confidence": result.get('confidence', 'medium'),
+            "notes": result.get('notes', 'DEBUG_MODE=CLAUDE: Claude APIのみ実行'),
+            "debug_image_base64": None,
+            "debug_selection_reason": "DEBUG_MODE=CLAUDE: OpenCV針検出は実行していません"
+        }
+
+    def _encode_debug_image(self, debug_image_path: Optional[str]) -> Optional[str]:
+        """デバッグ画像をbase64化して返す"""
+        if not debug_image_path:
+            return None
+
+        try:
+            with open(debug_image_path, 'rb') as f:
+                return base64.standard_b64encode(f.read()).decode('utf-8')
+        except Exception:
+            return None
 
     def analyze_digital_meter(self, image_path: str) -> Dict[str, Any]:
         """7セグメントデジタルメーターを解析"""
@@ -118,6 +207,13 @@ class ClaudeVisionClient:
             MeterReaderException: API呼び出しエラー時
         """
         try:
+            if self.client is None:
+                raise MeterReaderException(
+                    'API_DISABLED',
+                    'Claude APIクライアントが初期化されていません',
+                    'DEBUG_MODE=OPENCVではClaude API呼び出しは無効です'
+                )
+
             # 画像ファイルを読み込んでbase64エンコード
             with open(image_path, 'rb') as f:
                 image_data = base64.standard_b64encode(f.read()).decode('utf-8')
@@ -204,6 +300,37 @@ class ClaudeVisionClient:
   "unit": "単位文字列",
   "confidence": "high/medium/low",
   "notes": "スケールの説明"
+}
+```"""
+
+        def _build_analog_claude_only_prompt(self) -> str:
+                """アナログメーター用プロンプトを構築（Claude単独読み取り）"""
+                return """あなたはアナログメーター読み取りの専門家です。
+画像を目視して、メーター値を直接読み取ってください。
+
+## 読み取り対象
+1. 現在の指示値（value）
+2. 単位（unit）
+3. スケール最小値（scale_min）
+4. スケール最大値（scale_max）
+5. 針位置の説明（needle_position）
+
+## 注意事項
+- COMPOUNDゲージは左側が負値の可能性があります
+- 値が曖昧な場合は confidence を medium か low にしてください
+
+## 出力形式
+必ず以下のJSON形式で返してください（他のテキストは含めない）:
+
+```json
+{
+    "value": 数値,
+    "unit": "単位文字列",
+    "scale_min": 最小値（数値）,
+    "scale_max": 最大値（数値）,
+    "needle_position": "針位置の説明",
+    "confidence": "high/medium/low",
+    "notes": "読み取り根拠の簡潔な説明"
 }
 ```"""
 
