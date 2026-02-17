@@ -4,7 +4,7 @@ from datetime import datetime
 import os
 
 from config import Config
-from utils.claude_client import ClaudeVisionClient, MeterReaderException
+from utils.claude_client import TesseractVisionClient, MeterReaderException
 from utils.image_processor import ImageProcessor, ImageProcessorException
 
 
@@ -13,10 +13,8 @@ app.config.from_object(Config)
 Config.init_app(app)
 
 # クライアントとプロセッサの初期化
-claude_client = ClaudeVisionClient(
-    api_key=app.config['ANTHROPIC_API_KEY'],
-    model=app.config['CLAUDE_MODEL'],
-    max_tokens=app.config['CLAUDE_MAX_TOKENS']
+tesseract_client = TesseractVisionClient(
+    tesseract_cmd=app.config['TESSERACT_CMD']
 )
 
 image_processor = ImageProcessor(
@@ -117,9 +115,9 @@ def analyze():
                 }
             }), 400
 
-        # Claude APIでメーター解析
+        # Tesseract OCRでメーター解析
         try:
-            result = claude_client.analyze_meter(filepath, meter_type)
+            result = tesseract_client.analyze_meter(filepath, meter_type)
 
             # レスポンスの構築
             response_data = {
