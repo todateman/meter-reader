@@ -63,6 +63,14 @@ cd meter-reader
 
 ### 2. 仮想環境の作成（推奨）
 
+#### 2.1. uv（推奨）
+
+```bash
+uv venv
+```
+
+#### 2.2. venv
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate  # Linux/Mac
@@ -71,6 +79,16 @@ source .venv/bin/activate  # Linux/Mac
 ```
 
 ### 3. 依存パッケージのインストール
+
+#### 3.1 uv（推奨）
+
+```bash
+uv sync  # pyproject.toml と uv.lock をプロジェクト環境に同期
+# または
+uv pip install -r requirements.txt
+```
+
+#### 3.2. venv
 
 ```bash
 pip install -r requirements.txt
@@ -101,6 +119,16 @@ CLAUDE_TIMEOUT=30
 ```
 
 ### 5. アプリケーションの起動
+
+#### 5.1. uv（推奨）
+
+```bash
+uv run app.py
+```
+
+#### 5.1. venv
+
+`.venv`の仮想環境内で
 
 ```bash
 python app.py
@@ -211,6 +239,8 @@ meter-reader/
 ├── app.py                      # Flask メインアプリケーション
 ├── config.py                   # 設定ファイル
 ├── requirements.txt            # Python依存パッケージ
+├── pyproject.toml              # uvの設定ファイル
+├── uv.lock                     # uvのプロジェクト依存関係ファイル
 ├── .env.example               # 環境変数テンプレート
 ├── .gitignore                 # Git除外設定
 ├── README.md                  # このファイル
