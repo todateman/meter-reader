@@ -6,17 +6,32 @@ import tempfile
 import uuid
 from typing import Dict, Any, Optional, Tuple, List
 from PIL import Image, ImageDraw, ImageFont
+from utils.yolo_segmenter import YoloSegmenter
 
 
 class NeedleDetector:
     """OpenCVを使用してアナログメーターの針を検出し、角度を計算する"""
 
-    def __init__(self, target_width: int = 640):
+    def __init__(
+        self,
+        target_width: int = 640,
+        yolo_enabled: bool = True,
+        yolo_model_path: Optional[str] = None,
+        yolo_conf_threshold: float = 0.25,
+        yolo_iou_threshold: float = 0.45,
+    ):
         """
         Args:
             target_width: リサイズ後の横幅（px）
         """
         self.target_width = target_width
+        self.yolo_segmenter = YoloSegmenter(
+            enabled=yolo_enabled,
+            model_path=yolo_model_path,
+            conf_threshold=yolo_conf_threshold,
+            iou_threshold=yolo_iou_threshold,
+            device="cpu",
+        )
 
     def detect(self, image_path: str) -> Dict[str, Any]:
         """
@@ -36,16 +51,58 @@ class NeedleDetector:
         img = self._resize(img)
         height, width = img.shape[:2]
 
-        # メーター領域（円）の検出
-        center, radius = self._detect_circle(img)
-        if center is None:
-            center = (width // 2, height // 2)
-            radius = min(width, height) // 3
+        # メーター領域（円）の検出: YOLO候補とOpenCV候補の両方を試し、針検出品質で最終選択
+        yolo_circle = self.yolo_segmenter.detect_meter_circle(img)
+        opencv_center, opencv_radius = self._detect_circle(img)
 
-        cx, cy = center
+        circle_candidates = []
+        if yolo_circle:
+            circle_candidates.append((tuple(yolo_circle["center"]), int(yolo_circle["radius"]), "yolo"))
+        if opencv_center is not None and opencv_radius is not None:
+            circle_candidates.append((tuple(opencv_center), int(opencv_radius), "opencv"))
+        if not circle_candidates:
+            circle_candidates.append(((width // 2, height // 2), min(width, height) // 3, "fallback"))
 
-        # 針の検出
-        needle_info = self._detect_needle(img, cx, cy, radius)
+        unique_candidates = []
+        seen = set()
+        for center, radius, source in circle_candidates:
+            key = (int(center[0]), int(center[1]), int(radius))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_candidates.append((center, radius, source))
+
+        best_result = None
+        for center, radius, source in unique_candidates:
+            cx, cy = int(center[0]), int(center[1])
+            yolo_tip = self.yolo_segmenter.detect_needle_tip(img, cx, cy)
+            needle_info = self._detect_needle(img, cx, cy, int(radius), yolo_tip)
+            if needle_info is None:
+                continue
+
+            combo_score = float(needle_info.get("quality_score", 0.0)) / max(float(radius), 1.0)
+            if source == "yolo":
+                combo_score += 0.05
+
+            candidate_result = {
+                "center": (cx, cy),
+                "radius": int(radius),
+                "source": source,
+                "needle_info": needle_info,
+                "combo_score": combo_score,
+            }
+
+            if best_result is None or candidate_result["combo_score"] > best_result["combo_score"]:
+                best_result = candidate_result
+
+        if best_result is None:
+            cx, cy = unique_candidates[0][0]
+            radius = int(unique_candidates[0][1])
+            needle_info = None
+        else:
+            cx, cy = best_result["center"]
+            radius = int(best_result["radius"])
+            needle_info = best_result["needle_info"]
 
         if needle_info is None:
             return {
@@ -60,6 +117,8 @@ class NeedleDetector:
         line = needle_info["line"]
         candidate_lines = needle_info.get("candidate_lines", [])
         selection_reason = needle_info.get("selection_reason", "")
+        if best_result is not None:
+            selection_reason = f"[{best_result['source']}] {selection_reason}"
 
         # 角度を時計の位置に変換
         # 座標系: 0°=6時, 90°=9時, 180°=12時, 270°=3時
@@ -342,12 +401,31 @@ class NeedleDetector:
                 return None, None
 
             # 円周エッジ成立度が低い候補は除外（不完全な疑似円を抑制）
-            strong_candidates = [c for c in candidates if c[4] >= 0.09]
+            # 大きい円では被覆率が低めに出やすいため、閾値を緩和
+            strong_candidates = [c for c in candidates if c[4] >= 0.06]
             if strong_candidates:
                 candidates = strong_candidates
 
-            # 最終選択: 画像中心への近さを最優先、同率なら円周エッジ成立度を優先
-            best = min(candidates, key=lambda c: (c[3], -c[4]))
+            # 極端に大きい円は、円周エッジ成立度が低い場合に誤検出しやすいため除外
+            large_circle_min_radius = min_dim * 0.35
+            large_circle_min_ring_score = 0.065
+            size_filtered_candidates = [
+                c for c in candidates
+                if not (c[2] >= large_circle_min_radius and c[4] < large_circle_min_ring_score)
+            ]
+            if size_filtered_candidates:
+                candidates = size_filtered_candidates
+
+            # 最終選択:
+            # 1) 画像中心付近の候補がある場合は、大きい円（メーター外周）を優先
+            # 2) それ以外は中心への近さを優先
+            near_center_limit = max(25, int(min_dim * 0.14))
+            near_center_candidates = [c for c in candidates if c[3] <= near_center_limit]
+
+            if near_center_candidates:
+                best = max(near_center_candidates, key=lambda c: (c[2], c[4], -c[3]))
+            else:
+                best = min(candidates, key=lambda c: (c[3], -c[4], -c[2]))
             return (int(best[0]), int(best[1])), int(best[2])
 
         return None, None
@@ -366,7 +444,14 @@ class NeedleDetector:
         except Exception:
             return 0.0
 
-    def _detect_needle(self, img: np.ndarray, cx: int, cy: int, radius: int) -> Optional[Dict[str, Any]]:
+    def _detect_needle(
+        self,
+        img: np.ndarray,
+        cx: int,
+        cy: int,
+        radius: int,
+        yolo_tip: Optional[Tuple[int, int]] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         ハフ変換で針を検出し、角度を計算する
 
@@ -377,28 +462,47 @@ class NeedleDetector:
 
         # メーター領域のマスク
         mask = np.zeros(gray.shape, dtype=np.uint8)
-        cv2.circle(mask, (cx, cy), int(radius * 0.85), 255, -1)
+        cv2.circle(mask, (cx, cy), int(radius * 0.88), 255, -1)
         # 中心の小さい領域を除外（文字や固定部分を避ける）
-        cv2.circle(mask, (cx, cy), int(radius * 0.1), 0, -1)
+        cv2.circle(mask, (cx, cy), int(radius * 0.06), 0, -1)
         masked = cv2.bitwise_and(gray, gray, mask=mask)
 
-        # 二値化
-        _, thresh = cv2.threshold(masked, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        # メーター領域外を除外
-        thresh = cv2.bitwise_and(thresh, thresh, mask=mask)
+        line_candidates = []
 
-        # エッジ検出
-        edges = cv2.Canny(thresh, 50, 150)
-
-        # ハフ変換で直線検出
-        lines = cv2.HoughLinesP(
-            edges, 1, np.pi / 180,
-            threshold=20,
-            minLineLength=int(radius * 0.18),
-            maxLineGap=int(radius * 0.14)
+        # 針抽出の頑健性向上のため、前処理とハフ閾値を段階的に試行
+        # 1) Otsu反転（二値が明瞭な画像向け）
+        # 2) 適応二値化（照明ムラ・低コントラスト画像向け）
+        _, otsu_inv = cv2.threshold(masked, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        adapt_inv = cv2.adaptiveThreshold(
+            cv2.GaussianBlur(masked, (5, 5), 0),
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            31,
+            4,
         )
 
-        if lines is None:
+        preprocess_variants = [
+            ("otsu", otsu_inv, 40, 120, 16, 0.14, 0.18),
+            ("adapt", adapt_inv, 40, 120, 16, 0.14, 0.18),
+            ("adapt_relaxed", adapt_inv, 30, 90, 12, 0.10, 0.20),
+        ]
+
+        for _, preprocessed, canny_low, canny_high, hough_threshold, min_len_ratio, max_gap_ratio in preprocess_variants:
+            preprocessed = cv2.bitwise_and(preprocessed, preprocessed, mask=mask)
+            edges = cv2.Canny(preprocessed, canny_low, canny_high)
+            lines = cv2.HoughLinesP(
+                edges,
+                1,
+                np.pi / 180,
+                threshold=hough_threshold,
+                minLineLength=int(radius * min_len_ratio),
+                maxLineGap=int(radius * max_gap_ratio),
+            )
+            if lines is not None:
+                line_candidates.extend(lines)
+
+        if not line_candidates:
             return None
 
         # 針候補の選別
@@ -415,19 +519,19 @@ class NeedleDetector:
         fallback_metrics = None
         candidate_lines: List[Dict[str, Any]] = []
 
-        for line in lines:
+        for line in line_candidates:
             x1, y1, x2, y2 = line[0]
             dx, dy = x2 - x1, y2 - y1
             line_len = math.sqrt(dx * dx + dy * dy)
 
-            if line_len < radius * 0.18:
+            if line_len < radius * 0.12:
                 continue
 
             # 中心点から直線への距離
             dist = abs(dy * cx - dx * cy + x2 * y1 - y2 * x1) / line_len
 
             # 中心に十分近い直線のみ
-            if dist > radius * 0.22:
+            if dist > radius * 0.28:
                 continue
 
             # 中心からの距離（両端）
@@ -437,8 +541,16 @@ class NeedleDetector:
             far_dist = max(d1, d2)
             outward_span = far_dist - near_dist
 
+            tip_x, tip_y = (x1, y1) if d1 > d2 else (x2, y2)
+            angle_rad = math.atan2(-(tip_x - cx), (tip_y - cy))
+            angle_deg = math.degrees(angle_rad)
+            if angle_deg < 0:
+                angle_deg += 360
+
             # フォールバック用: 中心への距離が小さく、長い線を優先
             this_fallback_score = dist / line_len
+            if not (40.0 <= angle_deg <= 310.0):
+                this_fallback_score += 0.35
             if this_fallback_score < fallback_score:
                 fallback_score = this_fallback_score
                 fallback_line = (x1, y1, x2, y2)
@@ -448,13 +560,20 @@ class NeedleDetector:
                     "near_dist": near_dist,
                     "far_dist": far_dist,
                     "outward_span": outward_span,
+                    "angle": angle_deg,
                     "score": this_fallback_score,
                 }
 
             # 優先条件:
-            # - 片端が中心近傍にある
+            # - 片端が中心近傍にある（向き判定の安定化）
             # - もう片端が外周方向まで十分伸びている
-            primary_eligible = near_dist <= radius * 0.25 and far_dist >= radius * 0.5
+            # - 標準スイープ角(50°~310°)の近傍にある
+            primary_eligible = (
+                near_dist <= radius * 0.22
+                and far_dist >= radius * 0.45
+                and far_dist <= radius * 1.02
+                and 40.0 <= angle_deg <= 310.0
+            )
             candidate_lines.append({
                 "line": (int(x1), int(y1), int(x2), int(y2)),
                 "dist": float(dist),
@@ -469,9 +588,24 @@ class NeedleDetector:
             if not primary_eligible:
                 continue
 
-            # 中心から外側への伸長量を最優先、同率なら中心に近い線を優先
-            if outward_span > best_span or (math.isclose(outward_span, best_span) and dist < best_dist):
-                best_span = outward_span
+            # 針らしさスコア: 外周到達 + 線形状 + 放射方向の暗部強度
+            radial_darkness = self._radial_darkness_score(gray, cx, cy, radius, angle_deg)
+            primary_score = (
+                (far_dist * 1.0)
+                + (outward_span * 0.8)
+                - (near_dist * 1.0)
+                - (dist * 1.8)
+                + (radial_darkness * 0.9)
+            )
+
+            if yolo_tip is not None:
+                yolo_dx = tip_x - yolo_tip[0]
+                yolo_dy = tip_y - yolo_tip[1]
+                yolo_penalty = math.sqrt(yolo_dx * yolo_dx + yolo_dy * yolo_dy) * 0.2
+                primary_score -= yolo_penalty
+
+            if primary_score > best_span or (math.isclose(primary_score, best_span) and dist < best_dist):
+                best_span = primary_score
                 best_dist = dist
                 best_far_dist = far_dist
                 best_line = (x1, y1, x2, y2)
@@ -512,8 +646,8 @@ class NeedleDetector:
 
         if selected_primary:
             selection_reason = (
-                "選定理由: 中心近傍(near<=0.25R)かつ外周到達(far>=0.5R)の候補から、"
-                f"外向き伸長量(outward_span)最大を採用。selected span={best_span:.1f}, "
+                "選定理由: 中心近傍(near<=0.22R)かつ外周到達(0.45R<=far<=1.02R)かつ角度範囲内の候補から、"
+                f"針らしさスコア最大を採用。score={best_span:.1f}, "
                 f"far={best_far_dist:.1f}, dist={best_dist:.1f}"
             )
         elif fallback_metrics:
@@ -532,4 +666,24 @@ class NeedleDetector:
             "line": (int(x1), int(y1), int(x2), int(y2)),
             "candidate_lines": candidate_lines,
             "selection_reason": selection_reason,
+            "quality_score": float(best_span),
         }
+
+    def _radial_darkness_score(self, gray: np.ndarray, cx: int, cy: int, radius: int, angle_deg: float) -> float:
+        """中心から放射方向に沿った暗部スコア（針らしさ指標）"""
+        try:
+            rad = math.radians(angle_deg)
+            samples = []
+            for t in np.linspace(0.18, 0.92, 90):
+                x = int(cx - math.sin(rad) * radius * t)
+                y = int(cy + math.cos(rad) * radius * t)
+                if 0 <= x < gray.shape[1] and 0 <= y < gray.shape[0]:
+                    samples.append(gray[y, x])
+
+            if not samples:
+                return 0.0
+
+            percentile_18 = float(np.percentile(np.array(samples, dtype=np.float32), 18))
+            return max(0.0, 255.0 - percentile_18)
+        except Exception:
+            return 0.0

@@ -5,7 +5,7 @@ OpenCVによるローカル画像処理とClaude APIのビジョン機能を組�
 
 ## 機能
 
-- **アナログメーター読み取り**: OpenCVで針の角度を検出し、Claude APIでスケールを読み取って数値を算出
+- **アナログメーター読み取り**: YOLOセグメンテーション（有効時）+ OpenCVで針の角度を検出し、Claude APIでスケールを読み取って数値を算出
 - **7セグメントデジタルメーター読み取り**: Claude APIのビジョン機能でデジタル表示の数値を自動読み取り
 - **ドラッグ&ドロップ対応**: 簡単に画像をアップロード
 - **レスポンシブデザイン**: PC・タブレット・スマートフォン対応
@@ -23,7 +23,7 @@ OpenCVによるローカル画像処理とClaude APIのビジョン機能を組�
             [サーバー側計算] value = scale_min + (scale_max - scale_min) × position_ratio
 ```
 
-1. **OpenCV（ローカル処理）**: ハフ変換で円と針を検出し、針の角度からスケール上の位置比率（position_ratio）を算出
+1. **YOLO + OpenCV（ローカル処理）**: YOLOセグメンテーションでメーター領域（およびモデルに含まれる場合は針）を補助検出し、OpenCVで針の角度からスケール上の位置比率（position_ratio）を算出
 2. **Claude API（スケール読み取り）**: 画像からスケールの最小値・最大値・単位のみを読み取り
 3. **サーバー側計算**: `値 = 最小値 + (最大値 - 最小値) × position_ratio` で最終値を算出
 
@@ -119,6 +119,13 @@ CLAUDE_MODEL=claude-sonnet-4-5
 CLAUDE_MAX_TOKENS=1024
 CLAUDE_TIMEOUT=30
 
+# YOLOセグメンテーション設定（アナログ前処理）
+YOLO_SEGMENTATION_ENABLED=True
+# カスタムモデルを使う場合のみ指定（未指定時は yolov8n-seg.pt）
+YOLO_MODEL_PATH=
+YOLO_CONF_THRESHOLD=0.25
+YOLO_IOU_THRESHOLD=0.45
+
 # 解析モード
 # OPENCV: OpenCVのみ実行（アナログの針位置のみ）
 # CLAUDE: Claude APIのみ実行
@@ -131,6 +138,13 @@ DEBUG_MODE=BOTH
 - `OPENCV`: OpenCVのみ実行（アナログメーターの針位置検出のみ。スケール読み取り・最終値計算は行いません）
 - `CLAUDE`: Claude APIのみ実行（画像目視で値を直接読み取り）
 - `BOTH`: OpenCVとClaude APIを両方実行（通常モード）
+
+### YOLOセグメンテーション設定
+
+- `YOLO_SEGMENTATION_ENABLED=True`: YOLOセグメンテーションを有効化（推奨）
+- `YOLO_MODEL_PATH`: カスタム学習済みセグメンテーションモデル（`.pt`）を指定可能
+- `YOLO_CONF_THRESHOLD` / `YOLO_IOU_THRESHOLD`: 検出のしきい値
+- YOLOで対象が検出できない場合は自動的にOpenCV検出へフォールバック
 
 ### 5. アプリケーションの起動
 

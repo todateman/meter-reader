@@ -32,6 +32,12 @@ class Config:
     _debug_mode = os.getenv('DEBUG_MODE', 'BOTH').strip().upper()
     DEBUG_MODE = _debug_mode if _debug_mode in {'OPENCV', 'CLAUDE', 'BOTH'} else 'BOTH'
 
+    # YOLOセグメンテーション設定（アナログメーター前処理）
+    YOLO_SEGMENTATION_ENABLED = os.getenv('YOLO_SEGMENTATION_ENABLED', 'True') == 'True'
+    YOLO_MODEL_PATH = os.getenv('YOLO_MODEL_PATH', '').strip() or None
+    YOLO_CONF_THRESHOLD = float(os.getenv('YOLO_CONF_THRESHOLD', '0.25'))
+    YOLO_IOU_THRESHOLD = float(os.getenv('YOLO_IOU_THRESHOLD', '0.45'))
+
     @staticmethod
     def init_app(app):
         """アプリケーション初期化時の処理"""

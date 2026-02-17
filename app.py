@@ -17,7 +17,11 @@ claude_client = ClaudeVisionClient(
     api_key=app.config['ANTHROPIC_API_KEY'],
     model=app.config['CLAUDE_MODEL'],
     max_tokens=app.config['CLAUDE_MAX_TOKENS'],
-    debug_mode=app.config['DEBUG_MODE']
+    debug_mode=app.config['DEBUG_MODE'],
+    yolo_enabled=app.config['YOLO_SEGMENTATION_ENABLED'],
+    yolo_model_path=app.config['YOLO_MODEL_PATH'],
+    yolo_conf_threshold=app.config['YOLO_CONF_THRESHOLD'],
+    yolo_iou_threshold=app.config['YOLO_IOU_THRESHOLD'],
 )
 
 image_processor = ImageProcessor(

@@ -28,7 +28,11 @@ class ClaudeVisionClient:
         api_key: Optional[str],
         model: str = 'claude-sonnet-4-5',
         max_tokens: int = 1024,
-        debug_mode: str = 'BOTH'
+        debug_mode: str = 'BOTH',
+        yolo_enabled: bool = True,
+        yolo_model_path: Optional[str] = None,
+        yolo_conf_threshold: float = 0.25,
+        yolo_iou_threshold: float = 0.45,
     ):
         """
         ClaudeVisionClientの初期化
@@ -48,7 +52,12 @@ class ClaudeVisionClient:
         self.client = anthropic.Anthropic(api_key=api_key) if api_key else None
         self.model = model
         self.max_tokens = max_tokens
-        self.needle_detector = NeedleDetector()
+        self.needle_detector = NeedleDetector(
+            yolo_enabled=yolo_enabled,
+            yolo_model_path=yolo_model_path,
+            yolo_conf_threshold=yolo_conf_threshold,
+            yolo_iou_threshold=yolo_iou_threshold,
+        )
 
     def analyze_meter(self, image_path: str, meter_type: str) -> Dict[str, Any]:
         """
