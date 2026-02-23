@@ -1,12 +1,12 @@
 # メーター数値読み取りアプリ
 
 アナログメーターと7セグメントデジタルメーターの画像から数値を自動で読み取るWebアプリケーションです。
-OpenCVによるローカル画像処理とClaude APIのビジョン機能を組み合わせて高精度な読み取りを実現しています。
+OpenCVによるローカル画像処理とAWS Bedrock（Claudeモデル）のビジョン機能を組み合わせて高精度な読み取りを実現しています。
 
 ## 機能
 
-- **アナログメーター読み取り**: YOLOセグメンテーション（有効時）+ OpenCVで針の角度を検出し、Claude APIでスケールを読み取って数値を算出
-- **7セグメントデジタルメーター読み取り**: Claude APIのビジョン機能でデジタル表示の数値を自動読み取り
+- **アナログメーター読み取り**: YOLOセグメンテーション（有効時）+ OpenCVで針の角度を検出し、Bedrock上のClaudeでスケールを読み取って数値を算出
+- **7セグメントデジタルメーター読み取り**: Bedrock上のClaudeビジョン機能でデジタル表示の数値を自動読み取り
 - **ドラッグ&ドロップ対応**: 簡単に画像をアップロード
 - **レスポンシブデザイン**: PC・タブレット・スマートフォン対応
 - **詳細情報表示**: 読み取り結果の信頼度や詳細情報を表示
@@ -18,16 +18,16 @@ OpenCVによるローカル画像処理とClaude APIのビジョン機能を組�
 ```text
 画像 → [OpenCV] 針の角度検出 → position_ratio算出
                                        ↓
-画像 → [Claude API] スケール読み取り → scale_min, scale_max, unit
+画像 → [AWS Bedrock (Claude)] スケール読み取り → scale_min, scale_max, unit
                                        ↓
             [サーバー側計算] value = scale_min + (scale_max - scale_min) × position_ratio
 ```
 
 1. **YOLO + OpenCV（ローカル処理）**: YOLOセグメンテーションでメーター領域（およびモデルに含まれる場合は針）を補助検出し、OpenCVで針の角度からスケール上の位置比率（position_ratio）を算出
-2. **Claude API（スケール読み取り）**: 画像からスケールの最小値・最大値・単位のみを読み取り
+2. **AWS Bedrock（スケール読み取り）**: 画像からスケールの最小値・最大値・単位のみを読み取り
 3. **サーバー側計算**: `値 = 最小値 + (最大値 - 最小値) × position_ratio` で最終値を算出
 
-この方式により、Claude APIの計算ミスや目視による上書きを排除し、安定した読み取り精度を実現しています。
+この方式により、モデル側の計算ミスや目視による上書きを排除し、安定した読み取り精度を実現しています。
 
 ## サンプル画像
 
@@ -45,15 +45,16 @@ OpenCVによるローカル画像処理とClaude APIのビジョン機能を組�
 ## 技術スタック
 
 - **バックエンド**: Python 3.8+, Flask
-- **画像認識**: Claude API (Anthropic)
+- **画像認識**: AWS Bedrock（Claude）
 - **画像処理**: OpenCV (opencv-python-headless), NumPy
 - **フロントエンド**: HTML5, CSS3, JavaScript (Vanilla)
 
 ## 必要要件
 
 - Python 3.8以上
-- Anthropic APIキー（[Anthropic Console](https://console.anthropic.com/)で取得）
-- インターネット接続（Claude API呼び出しのため）
+- AWSアカウント（Bedrock利用権限付き）
+- AWS CLI（認証情報設定済み）
+- インターネット接続（Bedrock API呼び出しのため）
 
 ## セットアップ
 
@@ -96,9 +97,33 @@ uv pip install -r requirements.txt
 pip install -r requirements.txt
 ```
 
-### 4. 環境変数の設定
+### 4. AWS CLIのセットアップ
 
-`.env.example`をコピーして`.env`ファイルを作成し、APIキーを設定します。
+AWS Bedrockを使うため、先にAWS CLIを設定します。
+
+```bash
+# AWS CLIをインストール（未導入の場合）
+pip install awscli
+
+# リージョンと出力形式の設定
+aws configure set default.region ap-northeast-1
+aws configure set default.output json
+
+# 設定確認
+aws configure list
+```
+
+認証情報確認:
+
+```bash
+aws sts get-caller-identity
+```
+
+`Unable to locate credentials` が表示される場合は、`aws configure` または `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` を設定してください。
+
+### 5. 環境変数の設定
+
+`.env.example`をコピーして`.env`ファイルを作成します。
 
 ```bash
 cp .env.example .env
@@ -107,17 +132,19 @@ cp .env.example .env
 `.env`ファイルを編集:
 
 ```env
-ANTHROPIC_API_KEY=your_actual_api_key_here
 FLASK_ENV=development
 FLASK_DEBUG=True
 MAX_CONTENT_LENGTH=10485760
 UPLOAD_FOLDER=static/uploads
 ALLOWED_EXTENSIONS=jpg,jpeg,png
 
-# Claude APIモデル設定
-CLAUDE_MODEL=claude-sonnet-4-5
+# Bedrock設定
+BEDROCK_REGION=ap-northeast-1
+BEDROCK_MODEL_ID=anthropic.claude-sonnet-4-5-20250929-v1:0
+
+# 推論設定
 CLAUDE_MAX_TOKENS=1024
-CLAUDE_TIMEOUT=30
+BEDROCK_TIMEOUT=30
 
 # YOLOセグメンテーション設定（アナログ前処理）
 YOLO_SEGMENTATION_ENABLED=True
@@ -128,16 +155,16 @@ YOLO_IOU_THRESHOLD=0.45
 
 # 解析モード
 # OPENCV: OpenCVのみ実行（アナログの針位置のみ）
-# CLAUDE: Claude APIのみ実行
-# BOTH: OpenCV + Claude API（通常モード）
+# CLAUDE: Bedrock APIのみ実行
+# BOTH: OpenCV + Bedrock API（通常モード）
 DEBUG_MODE=BOTH
 ```
 
 ### DEBUG_MODE の選択肢
 
 - `OPENCV`: OpenCVのみ実行（アナログメーターの針位置検出のみ。スケール読み取り・最終値計算は行いません）
-- `CLAUDE`: Claude APIのみ実行（画像目視で値を直接読み取り）
-- `BOTH`: OpenCVとClaude APIを両方実行（通常モード）
+- `CLAUDE`: Bedrock APIのみ実行（画像目視で値を直接読み取り）
+- `BOTH`: OpenCVとBedrock APIを両方実行（通常モード）
 
 ### YOLOセグメンテーション設定
 
@@ -146,15 +173,15 @@ DEBUG_MODE=BOTH
 - `YOLO_CONF_THRESHOLD` / `YOLO_IOU_THRESHOLD`: 検出のしきい値
 - YOLOで対象が検出できない場合は自動的にOpenCV検出へフォールバック
 
-### 5. アプリケーションの起動
+### 6. アプリケーションの起動
 
-#### 5.1. uv（推奨）
+#### 6.1. uv（推奨）
 
 ```bash
 uv run app.py
 ```
 
-#### 5.1. venv
+#### 6.2. venv
 
 `.venv`の仮想環境内で
 
@@ -257,7 +284,7 @@ meter_type: "analog" または "digital_7segment"
 | `INVALID_FILE_TYPE` | 非対応のファイル形式 | JPGまたはPNG形式の画像を使用してください |
 | `FILE_TOO_LARGE` | ファイルサイズ超過 | 10MB以下の画像を使用してください |
 | `NO_METER_DETECTED` | メーター未検出 | メーター全体が写っている画像を使用してください |
-| `API_ERROR` | Claude APIエラー | しばらく待ってから再度お試しください |
+| `API_ERROR` | Bedrock APIエラー | しばらく待ってから再度お試しください |
 | `RATE_LIMIT` | APIレート制限 | 少し待ってから再度お試しください |
 
 ## プロジェクト構造
@@ -274,7 +301,7 @@ meter-reader/
 ├── README.md                  # このファイル
 ├── utils/
 │   ├── __init__.py
-│   ├── claude_client.py       # Claude API クライアント（スケール読み取り+値計算）
+│   ├── claude_client.py       # Bedrock API クライアント（スケール読み取り+値計算）
 │   ├── needle_detector.py     # OpenCV 針検出（角度・位置比率算出）
 │   └── image_processor.py     # 画像処理ユーティリティ
 ├── sample/                    # テスト用サンプル画像
@@ -312,9 +339,9 @@ gunicorn -w 4 -b 0.0.0.0:8000 app:app
 
 ## トラブルシューティング
 
-### Q: "ANTHROPIC_API_KEY が設定されていません" というエラーが出る
+### Q: "Unable to locate credentials" というエラーが出る
 
-A: `.env`ファイルを作成し、有効なAPIキーを設定してください。
+A: AWS認証情報が未設定です。`aws configure` または `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` を設定してください。
 
 ### Q: 画像アップロード時に "413 Request Entity Too Large" エラーが出る
 
@@ -335,11 +362,11 @@ A: OpenCVの針検出は260°スイープを前提としています。ゲージ
 
 ### Q: 解析に時間がかかる
 
-A: Claude APIの呼び出しには数秒かかる場合があります。ネットワーク接続が安定していることを確認してください。
+A: Bedrock APIの呼び出しには数秒かかる場合があります。ネットワーク接続が安定していることを確認してください。
 
 ## セキュリティ
 
-- APIキーは `.env` ファイルで管理し、決してコミットしないでください
+- AWS認証情報（アクセスキー、シークレットキー）は `.env` や環境変数で管理し、決してコミットしないでください
 - アップロードされた画像は解析後すぐに削除されます
 - 本番環境では HTTPS を使用してください
 - 適切なレートリミットを設定してください

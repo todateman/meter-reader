@@ -14,9 +14,10 @@ Config.init_app(app)
 
 # クライアントとプロセッサの初期化
 claude_client = ClaudeVisionClient(
-    api_key=app.config['ANTHROPIC_API_KEY'],
-    model=app.config['CLAUDE_MODEL'],
+    model=app.config['BEDROCK_MODEL_ID'],
     max_tokens=app.config['CLAUDE_MAX_TOKENS'],
+    timeout=app.config['BEDROCK_TIMEOUT'],
+    region_name=app.config['BEDROCK_REGION'],
     debug_mode=app.config['DEBUG_MODE'],
     yolo_enabled=app.config['YOLO_SEGMENTATION_ENABLED'],
     yolo_model_path=app.config['YOLO_MODEL_PATH'],

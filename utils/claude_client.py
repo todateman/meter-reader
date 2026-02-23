@@ -1,9 +1,12 @@
-import anthropic
-import base64
+﻿import base64
 import json
 import re
-from typing import Dict, Any, Optional
 from pathlib import Path
+from typing import Any, Dict, Optional
+
+import boto3
+from botocore.config import Config as BotoConfig
+from botocore.exceptions import ClientError
 
 from utils.needle_detector import NeedleDetector
 
@@ -19,37 +22,39 @@ class MeterReaderException(Exception):
 
 
 class ClaudeVisionClient:
-    """Claude APIのビジョン機能を使用した画像解析クライアント"""
+    """Bedrock経由でClaudeのビジョン機能を使用した画像解析クライアント"""
 
     VALID_DEBUG_MODES = {'OPENCV', 'CLAUDE', 'BOTH'}
 
     def __init__(
         self,
-        api_key: Optional[str],
-        model: str = 'claude-sonnet-4-5',
+        model: str = 'anthropic.claude-sonnet-4-5-20250929-v1:0',
         max_tokens: int = 1024,
+        timeout: int = 30,
+        region_name: str = 'ap-northeast-1',
         debug_mode: str = 'BOTH',
         yolo_enabled: bool = True,
         yolo_model_path: Optional[str] = None,
         yolo_conf_threshold: float = 0.25,
         yolo_iou_threshold: float = 0.45,
     ):
-        """
-        ClaudeVisionClientの初期化
-
-        Args:
-            api_key: Anthropic API キー
-            model: 使用するClaudeモデル
-            max_tokens: 最大トークン数
-        """
+        """ClaudeVisionClientの初期化"""
         self.debug_mode = (debug_mode or 'BOTH').upper()
         if self.debug_mode not in self.VALID_DEBUG_MODES:
             self.debug_mode = 'BOTH'
 
-        if self.debug_mode in {'CLAUDE', 'BOTH'} and not api_key:
-            raise ValueError("ANTHROPIC_API_KEY が設定されていません")
+        self.client = None
+        if self.debug_mode in {'CLAUDE', 'BOTH'}:
+            self.client = boto3.client(
+                service_name='bedrock-runtime',
+                region_name=region_name,
+                config=BotoConfig(
+                    connect_timeout=timeout,
+                    read_timeout=timeout,
+                    retries={'max_attempts': 3, 'mode': 'standard'},
+                ),
+            )
 
-        self.client = anthropic.Anthropic(api_key=api_key) if api_key else None
         self.model = model
         self.max_tokens = max_tokens
         self.needle_detector = NeedleDetector(
@@ -60,65 +65,47 @@ class ClaudeVisionClient:
         )
 
     def analyze_meter(self, image_path: str, meter_type: str) -> Dict[str, Any]:
-        """
-        メーター画像を解析
-
-        Args:
-            image_path: 画像ファイルのパス
-            meter_type: メータータイプ ('analog' or 'digital_7segment')
-
-        Returns:
-            解析結果の辞書
-
-        Raises:
-            MeterReaderException: 解析エラー時
-        """
+        """メーター画像を解析"""
         if meter_type == 'analog':
             return self.analyze_analog_meter(image_path)
-        elif meter_type == 'digital_7segment':
+        if meter_type == 'digital_7segment':
             if self.debug_mode == 'OPENCV':
                 raise MeterReaderException(
                     'INVALID_DEBUG_MODE',
                     '現在のDEBUG_MODEではデジタルメーター解析を実行できません',
-                    'digital_7segmentはClaude APIが必要です。DEBUG_MODEをCLAUDEまたはBOTHに変更してください'
+                    'digital_7segmentはBedrock APIが必要です。DEBUG_MODEをCLAUDEまたはBOTHに変更してください',
                 )
             return self.analyze_digital_meter(image_path)
-        else:
-            raise MeterReaderException(
-                'INVALID_METER_TYPE',
-                f'無効なメータータイプ: {meter_type}',
-                '指定できるタイプは "analog" または "digital_7segment" です'
-            )
+
+        raise MeterReaderException(
+            'INVALID_METER_TYPE',
+            f'無効なメータータイプ: {meter_type}',
+            '指定できるタイプは "analog" または "digital_7segment" です',
+        )
 
     def analyze_analog_meter(self, image_path: str) -> Dict[str, Any]:
         """アナログメーターをDEBUG_MODEに応じて解析"""
         if self.debug_mode == 'OPENCV':
             return self._analyze_analog_opencv_only(image_path)
-
         if self.debug_mode == 'CLAUDE':
             return self._analyze_analog_claude_only(image_path)
-
         return self._analyze_analog_both(image_path)
 
     def _analyze_analog_both(self, image_path: str) -> Dict[str, Any]:
-        """アナログメーターをローカルOpenCV + Claude APIで解析（通常モード）"""
-        # ローカルでOpenCV針検出を実行
+        """アナログメーターをローカルOpenCV + Bedrock APIで解析（通常モード）"""
         opencv_result = self.needle_detector.detect(image_path)
-        debug_image_base64 = self._encode_debug_image(opencv_result.get("debug_image_path"))
-        debug_selection_reason = opencv_result.get("debug_selection_reason")
+        debug_image_base64 = self._encode_debug_image(opencv_result.get('debug_image_path'))
+        debug_selection_reason = opencv_result.get('debug_selection_reason')
 
-        # Claudeにスケール情報のみ読み取らせる
         prompt = self._build_analog_prompt(opencv_result)
         scale_info = self._call_api(image_path, prompt)
 
-        # サーバー側で値を計算（Claudeの計算ミスを防止）
-        if opencv_result.get("success") and "scale_min" in scale_info and "scale_max" in scale_info:
-            ratio = opencv_result["position_ratio"]
-            scale_min = float(scale_info["scale_min"])
-            scale_max = float(scale_info["scale_max"])
+        if opencv_result.get('success') and 'scale_min' in scale_info and 'scale_max' in scale_info:
+            ratio = opencv_result['position_ratio']
+            scale_min = float(scale_info['scale_min'])
+            scale_max = float(scale_info['scale_max'])
             calculated_value = scale_min + (scale_max - scale_min) * ratio
 
-            # 小数点以下の桁数をスケールに合わせて丸め
             decimal_places = max(
                 len(str(scale_min).split('.')[-1]) if '.' in str(scale_min) else 0,
                 len(str(scale_max).split('.')[-1]) if '.' in str(scale_max) else 0,
@@ -126,45 +113,44 @@ class ClaudeVisionClient:
             calculated_value = round(calculated_value, decimal_places + 2)
 
             return {
-                "value": calculated_value,
-                "unit": scale_info.get("unit", ""),
-                "scale_range": f"{scale_min}~{scale_max}",
-                "needle_position": f"スケール全体の{opencv_result['position_percent']}%の位置",
-                "confidence": scale_info.get("confidence", "medium"),
-                "notes": f"計算: {scale_min} + ({scale_max} - {scale_min}) × {ratio} = {calculated_value}",
-                "debug_image_base64": debug_image_base64,
-                "debug_selection_reason": debug_selection_reason
+                'value': calculated_value,
+                'unit': scale_info.get('unit', ''),
+                'scale_range': f'{scale_min}~{scale_max}',
+                'needle_position': f"スケール全体の{opencv_result['position_percent']}%の位置",
+                'confidence': scale_info.get('confidence', 'medium'),
+                'notes': f'計算: {scale_min} + ({scale_max} - {scale_min}) × {ratio} = {calculated_value}',
+                'debug_image_base64': debug_image_base64,
+                'debug_selection_reason': debug_selection_reason,
             }
 
-        # OpenCV検出失敗時はClaude単独で読み取り（フォールバック）
-        scale_info["debug_image_base64"] = debug_image_base64
-        scale_info["debug_selection_reason"] = debug_selection_reason
+        scale_info['debug_image_base64'] = debug_image_base64
+        scale_info['debug_selection_reason'] = debug_selection_reason
         return scale_info
 
     def _analyze_analog_opencv_only(self, image_path: str) -> Dict[str, Any]:
         """アナログメーターをOpenCVのみで解析（デバッグ用）"""
         opencv_result = self.needle_detector.detect(image_path)
 
-        if not opencv_result.get("success"):
+        if not opencv_result.get('success'):
             raise MeterReaderException(
                 'NO_METER_DETECTED',
                 'OpenCVで針を検出できませんでした',
-                opencv_result.get('error', '針検出に失敗しました')
+                opencv_result.get('error', '針検出に失敗しました'),
             )
 
         return {
-            "value": None,
-            "unit": "",
-            "scale_range": "",
-            "needle_position": f"スケール全体の{opencv_result['position_percent']}%の位置",
-            "confidence": "medium",
-            "notes": "DEBUG_MODE=OPENCV: OpenCVのみ実行（スケール読み取り・最終値計算は未実施）",
-            "debug_image_base64": self._encode_debug_image(opencv_result.get("debug_image_path")),
-            "debug_selection_reason": opencv_result.get("debug_selection_reason")
+            'value': None,
+            'unit': '',
+            'scale_range': '',
+            'needle_position': f"スケール全体の{opencv_result['position_percent']}%の位置",
+            'confidence': 'medium',
+            'notes': 'DEBUG_MODE=OPENCV: OpenCVのみ実行（スケール読み取り・最終値計算は未実施）',
+            'debug_image_base64': self._encode_debug_image(opencv_result.get('debug_image_path')),
+            'debug_selection_reason': opencv_result.get('debug_selection_reason'),
         }
 
     def _analyze_analog_claude_only(self, image_path: str) -> Dict[str, Any]:
-        """アナログメーターをClaude APIのみで解析（デバッグ用）"""
+        """アナログメーターをBedrock APIのみで解析（デバッグ用）"""
         prompt = self._build_analog_claude_only_prompt()
         result = self._call_api(image_path, prompt)
 
@@ -172,17 +158,17 @@ class ClaudeVisionClient:
         scale_max = result.get('scale_max')
         scale_range = ''
         if scale_min is not None and scale_max is not None:
-            scale_range = f"{scale_min}~{scale_max}"
+            scale_range = f'{scale_min}~{scale_max}'
 
         return {
-            "value": result.get('value'),
-            "unit": result.get('unit', ''),
-            "scale_range": scale_range,
-            "needle_position": result.get('needle_position', ''),
-            "confidence": result.get('confidence', 'medium'),
-            "notes": result.get('notes', 'DEBUG_MODE=CLAUDE: Claude APIのみ実行'),
-            "debug_image_base64": None,
-            "debug_selection_reason": "DEBUG_MODE=CLAUDE: OpenCV針検出は実行していません"
+            'value': result.get('value'),
+            'unit': result.get('unit', ''),
+            'scale_range': scale_range,
+            'needle_position': result.get('needle_position', ''),
+            'confidence': result.get('confidence', 'medium'),
+            'notes': result.get('notes', 'DEBUG_MODE=CLAUDE: Bedrock APIのみ実行'),
+            'debug_image_base64': None,
+            'debug_selection_reason': 'DEBUG_MODE=CLAUDE: OpenCV針検出は実行していません',
         }
 
     def _encode_debug_image(self, debug_image_path: Optional[str]) -> Optional[str]:
@@ -191,8 +177,8 @@ class ClaudeVisionClient:
             return None
 
         try:
-            with open(debug_image_path, 'rb') as f:
-                return base64.standard_b64encode(f.read()).decode('utf-8')
+            with open(debug_image_path, 'rb') as file:
+                return base64.standard_b64encode(file.read()).decode('utf-8')
         except Exception:
             return None
 
@@ -202,90 +188,78 @@ class ClaudeVisionClient:
         return self._call_api(image_path, prompt)
 
     def _call_api(self, image_path: str, prompt: str) -> Dict[str, Any]:
-        """
-        Claude APIを呼び出して画像を解析
-
-        Args:
-            image_path: 画像ファイルのパス
-            prompt: 解析用プロンプト
-
-        Returns:
-            解析結果の辞書
-
-        Raises:
-            MeterReaderException: API呼び出しエラー時
-        """
+        """Bedrock APIを呼び出して画像を解析"""
         try:
             if self.client is None:
                 raise MeterReaderException(
                     'API_DISABLED',
-                    'Claude APIクライアントが初期化されていません',
-                    'DEBUG_MODE=OPENCVではClaude API呼び出しは無効です'
+                    'Bedrock APIクライアントが初期化されていません',
+                    'DEBUG_MODE=OPENCVではBedrock API呼び出しは無効です',
                 )
 
-            # 画像ファイルを読み込んでbase64エンコード
-            with open(image_path, 'rb') as f:
-                image_data = base64.standard_b64encode(f.read()).decode('utf-8')
+            with open(image_path, 'rb') as file:
+                image_data = file.read()
 
-            # 画像のメディアタイプを判定
-            media_type = self._get_media_type(image_path)
+            image_format = self._get_image_format(image_path)
 
-            # Claude APIにリクエスト
-            message = self.client.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
+            message = self.client.converse(
+                modelId=self.model,
+                inferenceConfig={
+                    'maxTokens': self.max_tokens,
+                },
                 messages=[
                     {
-                        "role": "user",
-                        "content": [
+                        'role': 'user',
+                        'content': [
                             {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": media_type,
-                                    "data": image_data,
-                                },
+                                'image': {
+                                    'format': image_format,
+                                    'source': {
+                                        'bytes': image_data,
+                                    },
+                                }
                             },
                             {
-                                "type": "text",
-                                "text": prompt
-                            }
+                                'text': prompt,
+                            },
                         ],
                     }
                 ],
             )
 
-            # レスポンスをパース
             return self._parse_response(message)
 
-        except anthropic.RateLimitError:
-            raise MeterReaderException(
-                'RATE_LIMIT',
-                'APIレート制限に達しました',
-                'しばらく待ってから再度お試しください'
-            )
-        except anthropic.APIError as e:
+        except ClientError as error:
+            error_code = error.response.get('Error', {}).get('Code', 'Unknown')
+            if error_code in {'ThrottlingException', 'TooManyRequestsException'}:
+                raise MeterReaderException(
+                    'RATE_LIMIT',
+                    'APIレート制限に達しました',
+                    'しばらく待ってから再度お試しください',
+                )
+
             raise MeterReaderException(
                 'API_ERROR',
-                'Claude API エラーが発生しました',
-                str(e)
+                'Bedrock API エラーが発生しました',
+                f'{error_code}: {error}',
             )
         except FileNotFoundError:
             raise MeterReaderException(
                 'FILE_NOT_FOUND',
                 '画像ファイルが見つかりません',
-                f'パス: {image_path}'
+                f'パス: {image_path}',
             )
-        except Exception as e:
+        except MeterReaderException:
+            raise
+        except Exception as error:
             raise MeterReaderException(
                 'UNKNOWN_ERROR',
                 '予期しないエラーが発生しました',
-                str(e)
+                str(error),
             )
 
     def _build_analog_prompt(self, opencv_result: Dict[str, Any]) -> str:
         """アナログメーター用プロンプトを構築（スケール読み取り専用）"""
-
         return """あなたはアナログメーター読み取りの専門家です。
 画像からメーターのスケール情報を読み取ってください。
 
@@ -304,17 +278,17 @@ class ClaudeVisionClient:
 
 ```json
 {
-  "scale_min": 最小値（数値）,
-  "scale_max": 最大値（数値）,
-  "unit": "単位文字列",
-  "confidence": "high/medium/low",
+  "scale_min": 最小値（数値）, 
+  "scale_max": 最大値（数値）, 
+  "unit": "単位文字列", 
+  "confidence": "high/medium/low", 
   "notes": "スケールの説明"
 }
 ```"""
 
-        def _build_analog_claude_only_prompt(self) -> str:
-                """アナログメーター用プロンプトを構築（Claude単独読み取り）"""
-                return """あなたはアナログメーター読み取りの専門家です。
+    def _build_analog_claude_only_prompt(self) -> str:
+        """アナログメーター用プロンプトを構築（Claude単独読み取り）"""
+        return """あなたはアナログメーター読み取りの専門家です。
 画像を目視して、メーター値を直接読み取ってください。
 
 ## 読み取り対象
@@ -335,8 +309,8 @@ class ClaudeVisionClient:
 {
     "value": 数値,
     "unit": "単位文字列",
-    "scale_min": 最小値（数値）,
-    "scale_max": 最大値（数値）,
+    "scale_min": 最小値（数値）, 
+    "scale_max": 最大値（数値）, 
     "needle_position": "針位置の説明",
     "confidence": "high/medium/low",
     "notes": "読み取り根拠の簡潔な説明"
@@ -385,11 +359,11 @@ class ClaudeVisionClient:
 
 ```json
 {
-  "value": 数値（数値型、小数点含む、例: 123.45）,
-  "unit": "単位文字列（例: kWh, V, A, ℃など。不明な場合は空文字列）",
-  "decimal_places": 小数点以下の桁数（整数型、例: 123.45なら2）,
-  "confidence": "high/medium/low（high: 全桁明確、medium: 一部不鮮明、low: 判読困難）",
-  "segment_status": "正常/異常の説明（例: 正常、2桁目のセグメント一部欠け、など）",
+  "value": 数値（数値型、小数点含む、例: 123.45）, 
+  "unit": "単位文字列（例: kWh, V, A, ℃など。不明な場合は空文字列）", 
+  "decimal_places": 小数点以下の桁数（整数型、例: 123.45なら2）, 
+  "confidence": "high/medium/low（high: 全桁明確、medium: 一部不鮮明、low: 判読困難）", 
+  "segment_status": "正常/異常の説明（例: 正常、2桁目のセグメント一部欠け、など）", 
   "notes": "追加の観察事項（例: 反射あり、先頭に0表示、マイナス記号ありなど）"
 }
 ```
@@ -397,84 +371,68 @@ class ClaudeVisionClient:
 エラーの場合:
 ```json
 {
-  "error": "エラーの詳細説明（デジタル表示が写っていない、画像が不鮮明など）",
+  "error": "エラーの詳細説明（デジタル表示が写っていない、画像が不鮮明など）", 
   "confidence": "low"
 }
 ```"""
 
-    def _parse_response(self, message) -> Dict[str, Any]:
-        """
-        Claude APIのレスポンスからJSONを抽出してパース
-
-        Args:
-            message: Claude APIからのメッセージオブジェクト
-
-        Returns:
-            パースされた辞書
-
-        Raises:
-            MeterReaderException: パースエラー時
-        """
+    def _parse_response(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        """Bedrock APIのレスポンスからJSONを抽出してパース"""
         try:
-            # レスポンステキストを取得
-            response_text = message.content[0].text
+            content = message.get('output', {}).get('message', {}).get('content', [])
+            text_blocks = [item.get('text', '') for item in content if isinstance(item, dict) and 'text' in item]
+            response_text = '\n'.join(text_blocks).strip()
 
-            # JSONブロックを抽出（```json ... ``` または {...} の形式）
+            if not response_text:
+                raise MeterReaderException(
+                    'PARSE_ERROR',
+                    'レスポンスにテキストが含まれていません',
+                    str(message),
+                )
+
             json_match = re.search(r'```json\s*([\s\S]*?)\s*```', response_text)
             if json_match:
                 json_text = json_match.group(1)
             else:
-                # JSONブロックがない場合は、{ } で囲まれた部分を抽出
                 json_match = re.search(r'\{[\s\S]*\}', response_text)
-                if json_match:
-                    json_text = json_match.group(0)
-                else:
+                if not json_match:
                     raise MeterReaderException(
                         'PARSE_ERROR',
                         'レスポンスからJSONを抽出できませんでした',
-                        response_text
+                        response_text,
                     )
+                json_text = json_match.group(0)
 
-            # JSONをパース
             data = json.loads(json_text)
 
-            # エラーレスポンスの場合
             if 'error' in data:
                 raise MeterReaderException(
                     'NO_METER_DETECTED',
                     'メーターを読み取れませんでした',
-                    data.get('error', '不明なエラー')
+                    data.get('error', '不明なエラー'),
                 )
 
             return data
 
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError as error:
             raise MeterReaderException(
                 'PARSE_ERROR',
                 'JSONのパースに失敗しました',
-                str(e)
+                str(error),
             )
-        except (IndexError, AttributeError) as e:
+        except (IndexError, AttributeError, TypeError) as error:
             raise MeterReaderException(
                 'PARSE_ERROR',
                 'レスポンスの形式が不正です',
-                str(e)
+                str(error),
             )
 
-    def _get_media_type(self, image_path: str) -> str:
-        """
-        ファイル拡張子からメディアタイプを取得
-
-        Args:
-            image_path: 画像ファイルのパス
-
-        Returns:
-            メディアタイプ文字列
-        """
+    def _get_image_format(self, image_path: str) -> str:
+        """ファイル拡張子からBedrock用の画像フォーマットを取得"""
         ext = Path(image_path).suffix.lower()
         mapping = {
-            '.jpg': 'image/jpeg',
-            '.jpeg': 'image/jpeg',
-            '.png': 'image/png'
+            '.jpg': 'jpeg',
+            '.jpeg': 'jpeg',
+            '.png': 'png',
         }
-        return mapping.get(ext, 'image/jpeg')
+        return mapping.get(ext, 'jpeg')
