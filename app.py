@@ -15,9 +15,13 @@ Config.init_app(app)
 # クライアントとプロセッサの初期化
 claude_client = ClaudeVisionClient(
     model=app.config['BEDROCK_MODEL_ID'],
+    inference_profile_id=app.config['BEDROCK_INFERENCE_PROFILE_ID'],
     max_tokens=app.config['CLAUDE_MAX_TOKENS'],
     timeout=app.config['BEDROCK_TIMEOUT'],
     region_name=app.config['BEDROCK_REGION'],
+    aws_profile=app.config['AWS_PROFILE'],
+    ssl_verify=app.config['BEDROCK_SSL_VERIFY'],
+    ca_bundle=app.config['BEDROCK_CA_BUNDLE'],
     debug_mode=app.config['DEBUG_MODE'],
     yolo_enabled=app.config['YOLO_SEGMENTATION_ENABLED'],
     yolo_model_path=app.config['YOLO_MODEL_PATH'],

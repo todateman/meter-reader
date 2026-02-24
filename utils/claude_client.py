@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
+from botocore.exceptions import SSLError as BotoSSLError
 
 from utils.needle_detector import NeedleDetector
 
@@ -29,9 +30,13 @@ class ClaudeVisionClient:
     def __init__(
         self,
         model: str = 'anthropic.claude-sonnet-4-5-20250929-v1:0',
+        inference_profile_id: Optional[str] = None,
         max_tokens: int = 1024,
         timeout: int = 30,
         region_name: str = 'ap-northeast-1',
+        aws_profile: Optional[str] = None,
+        ssl_verify: bool = True,
+        ca_bundle: Optional[str] = None,
         debug_mode: str = 'BOTH',
         yolo_enabled: bool = True,
         yolo_model_path: Optional[str] = None,
@@ -45,7 +50,23 @@ class ClaudeVisionClient:
 
         self.client = None
         if self.debug_mode in {'CLAUDE', 'BOTH'}:
-            self.client = boto3.client(
+            verify_option: Any = ssl_verify
+            if ca_bundle:
+                ca_bundle_path = Path(ca_bundle)
+                if not ca_bundle_path.exists():
+                    raise MeterReaderException(
+                        'INVALID_CA_BUNDLE',
+                        '指定されたCA証明書ファイルが見つかりません',
+                        f'BEDROCK_CA_BUNDLE={ca_bundle}',
+                    )
+                verify_option = str(ca_bundle_path)
+
+            session_kwargs: Dict[str, Any] = {}
+            if aws_profile:
+                session_kwargs['profile_name'] = aws_profile
+
+            session = boto3.Session(**session_kwargs)
+            self.client = session.client(
                 service_name='bedrock-runtime',
                 region_name=region_name,
                 config=BotoConfig(
@@ -53,9 +74,11 @@ class ClaudeVisionClient:
                     read_timeout=timeout,
                     retries={'max_attempts': 3, 'mode': 'standard'},
                 ),
+                verify=verify_option,
             )
 
         self.model = model
+        self.inference_profile_id = (inference_profile_id or '').strip() or None
         self.max_tokens = max_tokens
         self.needle_detector = NeedleDetector(
             yolo_enabled=yolo_enabled,
@@ -203,7 +226,7 @@ class ClaudeVisionClient:
             image_format = self._get_image_format(image_path)
 
             message = self.client.converse(
-                modelId=self.model,
+                modelId=self.inference_profile_id or self.model,
                 inferenceConfig={
                     'maxTokens': self.max_tokens,
                 },
@@ -231,6 +254,7 @@ class ClaudeVisionClient:
 
         except ClientError as error:
             error_code = error.response.get('Error', {}).get('Code', 'Unknown')
+            error_message = error.response.get('Error', {}).get('Message', '')
             if error_code in {'ThrottlingException', 'TooManyRequestsException'}:
                 raise MeterReaderException(
                     'RATE_LIMIT',
@@ -238,16 +262,32 @@ class ClaudeVisionClient:
                     'しばらく待ってから再度お試しください',
                 )
 
+            if error_code == 'ValidationException' and 'inference profile' in error_message.lower():
+                raise MeterReaderException(
+                    'INFERENCE_PROFILE_REQUIRED',
+                    'このモデルはオンデマンド呼び出しに対応していません',
+                    'BEDROCK_INFERENCE_PROFILE_ID に推論プロファイルIDまたはARNを設定してください。'
+                    f' 現在のBEDROCK_MODEL_ID={self.model}',
+                )
+
             raise MeterReaderException(
                 'API_ERROR',
                 'Bedrock API エラーが発生しました',
-                f'{error_code}: {error}',
+                f'{error_code}: {error_message or error}',
             )
         except FileNotFoundError:
             raise MeterReaderException(
                 'FILE_NOT_FOUND',
                 '画像ファイルが見つかりません',
                 f'パス: {image_path}',
+            )
+        except BotoSSLError as error:
+            raise MeterReaderException(
+                'SSL_ERROR',
+                'SSL証明書の検証に失敗しました',
+                'BEDROCK_CA_BUNDLE に社内ルートCAのpemファイルを指定してください。'
+                '一時的に検証を無効化する場合は BEDROCK_SSL_VERIFY=False を設定できます（非推奨）。'
+                f' 詳細: {error}',
             )
         except MeterReaderException:
             raise

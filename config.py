@@ -19,6 +19,7 @@ class Config:
 
     # Bedrock設定
     BEDROCK_REGION = os.getenv('BEDROCK_REGION', os.getenv('AWS_REGION', 'ap-northeast-1'))
+    AWS_PROFILE = os.getenv('AWS_PROFILE', os.getenv('AWS_DEFAULT_PROFILE', '')).strip() or None
 
     # BedrockのClaudeモデルID
     # 推奨: anthropic.claude-sonnet-4-5-20250929-v1:0
@@ -28,8 +29,11 @@ class Config:
         'BEDROCK_MODEL_ID',
         os.getenv('CLAUDE_MODEL', 'anthropic.claude-sonnet-4-5-20250929-v1:0')
     )
+    BEDROCK_INFERENCE_PROFILE_ID = os.getenv('BEDROCK_INFERENCE_PROFILE_ID', '').strip() or None
     CLAUDE_MAX_TOKENS = int(os.getenv('CLAUDE_MAX_TOKENS', '1024'))
     BEDROCK_TIMEOUT = int(os.getenv('BEDROCK_TIMEOUT', os.getenv('CLAUDE_TIMEOUT', '30')))  # seconds
+    BEDROCK_SSL_VERIFY = os.getenv('BEDROCK_SSL_VERIFY', 'True').strip().lower() not in {'0', 'false', 'no'}
+    BEDROCK_CA_BUNDLE = os.getenv('BEDROCK_CA_BUNDLE', '').strip() or None
 
     _debug_mode = os.getenv('DEBUG_MODE', 'BOTH').strip().upper()
     DEBUG_MODE = _debug_mode if _debug_mode in {'OPENCV', 'CLAUDE', 'BOTH'} else 'BOTH'

@@ -20,3 +20,7 @@ venv/
 .DS_Store
 .skill_id
 .python-version
+*.pem
+*.cer
+*.cert
+*.key

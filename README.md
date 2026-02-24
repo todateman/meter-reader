@@ -102,12 +102,28 @@ pip install -r requirements.txt
 AWS Bedrockを使うため、先にAWS CLIを設定します。
 
 ```bash
-# AWS CLIをインストール（未導入の場合）
-pip install awscli
+# Linux でAWS CLIをインストール（未導入の場合）
+sudo yum remove awscli
 
-# リージョンと出力形式の設定
-aws configure set default.region ap-northeast-1
-aws configure set default.output json
+# Windows でAWS CLIをインストール（未導入の場合）
+msiexec.exe /i https://awscli.amazonaws.com/AWSCLIV2.msi
+
+# AWS CLIのインストール確認（バージョン確認）
+aws --version
+
+# リージョンを設定（例では東京リージョン）
+aws configure set region ap-northeast-1
+
+# AWS認証情報をプロファイルに追加する
+# ロールに合わせて使い分けられるように、ロールをプロファイル名にしておくとよい
+aws configure --profile hoge
+
+  # 対話形式で各パラメータを入力する
+  AWS Access Key ID [None]: 
+  AWS Secret Access Key [None]: 
+  AWS Session Token [None]: 
+  Default region name [None]: ap-northeast-1
+  Default output format [None]: json
 
 # 設定確認
 aws configure list
@@ -138,20 +154,36 @@ MAX_CONTENT_LENGTH=10485760
 UPLOAD_FOLDER=static/uploads
 ALLOWED_EXTENSIONS=jpg,jpeg,png
 
-# Bedrock設定
+# AWS Bedrock設定
+# AWS CLIで設定したリージョンと同じ値を推奨
 BEDROCK_REGION=ap-northeast-1
-BEDROCK_MODEL_ID=anthropic.claude-sonnet-4-5-20250929-v1:0
 
-# 推論設定
+# Bedrock ClaudeモデルID(2026.02.24時点の最新モデル)
+# 推奨: anthropic.claude-sonnet-4-5-20250929-v1:0
+# 高精度: anthropic.claude-opus-4-6-v1
+# 高速: anthropic.claude-haiku-4-5-20251001-v1:0
+BEDROCK_MODEL_ID=anthropic.claude-sonnet-4-5-20250929-v1:0
+# モデルによっては推論プロファイル必須（IDまたはARN）
+# 推論プロファイル一覧：https://docs.aws.amazon.com/ja_jp/bedrock/latest/userguide/inference-profiles-support.html
+# 推奨: jp.anthropic.claude-sonnet-4-5-20250929-v1:0
+# 高速: jp.anthropic.claude-haiku-4-5-20251001-v1:0
+BEDROCK_INFERENCE_PROFILE_ID=jp.anthropic.claude-sonnet-4-5-20250929-v1:0
 CLAUDE_MAX_TOKENS=1024
 BEDROCK_TIMEOUT=30
 
-# YOLOセグメンテーション設定（アナログ前処理）
-YOLO_SEGMENTATION_ENABLED=True
-# カスタムモデルを使う場合のみ指定（未指定時は yolov8n-seg.pt）
-YOLO_MODEL_PATH=
-YOLO_CONF_THRESHOLD=0.25
-YOLO_IOU_THRESHOLD=0.45
+# 企業ネットワーク配下で SSL: CERTIFICATE_VERIFY_FAILED が出る場合に設定
+# 参考：https://docs.aws.amazon.com/ja_jp/cli/v1/userguide/cli-chap-troubleshooting.html#tshoot-certificate-verify-failed, https://qiita.com/tyskJ/items/728fe1c2a73abd43cb40, https://qiita.com/satoushina/items/56831655a141ec80917d
+# 例: C:/certs/corporate-root-ca.pem
+BEDROCK_SSL_VERIFY=false
+BEDROCK_CA_BUNDLE=
+
+# aws configure で作成済みプロファイルを使う場合（推奨）
+AWS_PROFILE=default
+
+# AWS認証情報（aws configure済みなら不要）
+# AWS_ACCESS_KEY_ID=
+# AWS_SECRET_ACCESS_KEY=
+# AWS_SESSION_TOKEN=
 
 # 解析モード
 # OPENCV: OpenCVのみ実行（アナログの針位置のみ）
@@ -159,6 +191,13 @@ YOLO_IOU_THRESHOLD=0.45
 # BOTH: OpenCV + Bedrock API（通常モード）
 DEBUG_MODE=BOTH
 ```
+
+`AWS_PROFILE` を指定すると、アクセスキーを `.env` に直接書かずに、`aws configure` で保存済みの認証情報を利用できます。  
+
+`ValidationException: ... with on-demand throughput isn’t supported` が出る場合は、`BEDROCK_INFERENCE_PROFILE_ID` に対象モデルを含む推論プロファイルのIDまたはARNを設定してください。  
+
+`SSL: CERTIFICATE_VERIFY_FAILED` が発生する場合は、`BEDROCK_CA_BUNDLE` に社内ルートCA証明書（`.pem` もしくは `.cer`）を指定してください。  
+どうしても一時回避が必要な場合のみ `BEDROCK_SSL_VERIFY=False` を使えますが、セキュリティ上は非推奨です。
 
 ### DEBUG_MODE の選択肢
 
